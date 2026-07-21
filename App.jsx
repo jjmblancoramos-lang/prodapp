@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useMemo } from "react";
+import React, { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import comidasData from "./comidas-data.json";
 import entrenoData from "./entreno-data.json";
 import recetasData from "./recetas-data.json";
@@ -22,6 +22,12 @@ const SLOTS_COMIDA = [
   { key: "comida", label: "Comida" }, { key: "merienda", label: "Merienda" }, { key: "cena", label: "Cena" },
 ];
 const SLOTS_CON_RECETA = ["comida", "cena"];
+
+const TIPOS_EVENTO_ESPECIAL = {
+  viaje: { color: "#9B968A", label: "Viaje" },
+  homeexchange: { color: "#8B6FA8", label: "HomeExchange" },
+  vacaciones_ninos: { color: "#7FA66B", label: "Vacaciones de los niños" },
+};
 
 const uid = () => Math.random().toString(36).slice(2, 10);
 const todayISO = () => new Date().toISOString().slice(0, 10);
@@ -49,6 +55,46 @@ const DOW = ["L","M","X","J","V","S","D"];
 
 function shareWhatsApp(text) {
   window.open(`https://wa.me/?text=${encodeURIComponent(text)}`, "_blank");
+}
+
+/* ---------- eventos especiales (viaje / HomeExchange / vacaciones niños) ---------- */
+
+function eventoCubreDia(evento, iso) {
+  const fin = addDays(evento.inicio, evento.dias - 1);
+  return iso >= evento.inicio && iso <= fin;
+}
+function eventosParaDia(eventos, iso) {
+  return eventos.filter((e) => eventoCubreDia(e, iso));
+}
+function fondoEventosDia(eventos, iso) {
+  const activos = eventosParaDia(eventos, iso);
+  const colores = activos.map((e) => TIPOS_EVENTO_ESPECIAL[e.tipo].color);
+  if (colores.length === 0) return null;
+  if (colores.length === 1) return colores[0];
+  const step = 100 / colores.length;
+  const stops = colores.map((c, i) => `${c} ${i * step}%, ${c} ${(i + 1) * step}%`).join(", ");
+  return `linear-gradient(135deg, ${stops})`;
+}
+
+/* ---------- ayudas para restar ingredientes de la lista de la compra ---------- */
+
+function parseCantidadStr(str) {
+  if (!str) return null;
+  const m = String(str).trim().match(/^([\d.,]+)\s*(.*)$/);
+  if (!m) return null;
+  const num = parseFloat(m[1].replace(",", "."));
+  if (isNaN(num)) return null;
+  return { num, unidad: m[2].trim().toLowerCase() };
+}
+function convertirUnidad(num, unidad) {
+  const u = (unidad || "").toLowerCase();
+  if (u === "kg") return { num: num * 1000, unidad: "g" };
+  if (u === "l") return { num: num * 1000, unidad: "ml" };
+  return { num, unidad: u };
+}
+function formatCantidadStr(num, unidad) {
+  const rounded = Math.round(num * 100) / 100;
+  return unidad ? `${rounded} ${unidad}` : `${rounded}`;
 }
 
 /* ---------- importador de .ics (Google Calendar / cualquier calendario estándar) ---------- */
@@ -249,6 +295,114 @@ function ImportModal({ onImport, onClose }) {
         <div style={{ display: "flex", gap: 10, marginTop: 18 }}>
           <button onClick={onClose} style={btnPrimary}>Cerrar</button>
         </div>
+      </div>
+    </div>
+  );
+}
+
+/* ---------- evento especial (viaje / HomeExchange / vacaciones niños) ---------- */
+
+function EventoEspecialModal({ fecha, onSave, onClose }) {
+  const [paso, setPaso] = useState("eleccion");
+  const [personas, setPersonas] = useState(1);
+  const [motivo, setMotivo] = useState("Vacaciones");
+  const [dias, setDias] = useState(1);
+  const [destino, setDestino] = useState("");
+  const [eventoViajePendiente, setEventoViajePendiente] = useState(null);
+
+  const elegir = (opcion) => {
+    if (opcion === "cancelar") { onClose(); return; }
+    setPaso(opcion);
+  };
+
+  const irAConfirmarComidas = () => {
+    setEventoViajePendiente({ id: uid(), tipo: "viaje", inicio: fecha, dias: Number(dias) || 1, personas: Number(personas) || 1, motivo, destino });
+    setPaso("confirmarComidas");
+  };
+  const confirmarComidas = (borrar) => onSave({ ...eventoViajePendiente, borrarComidas: borrar });
+
+  const aceptarHomeExchange = () => onSave({ id: uid(), tipo: "homeexchange", inicio: fecha, dias: Number(dias) || 1 });
+  const aceptarVacaciones = () => onSave({ id: uid(), tipo: "vacaciones_ninos", inicio: fecha, dias: Number(dias) || 1 });
+
+  return (
+    <div style={{ position: "fixed", inset: 0, background: "rgba(43,42,38,0.45)", display: "flex", alignItems: "flex-end", justifyContent: "center", zIndex: 60 }} onClick={onClose}>
+      <div onClick={(e) => e.stopPropagation()} style={{ background: "#FBF9F4", width: "100%", maxWidth: 480, maxHeight: "90vh", overflowY: "auto", borderTopLeftRadius: 16, borderTopRightRadius: 16, padding: 20, fontFamily: "'Inter', system-ui, sans-serif" }}>
+        <div style={{ width: 40, height: 4, background: "#DDD6C7", borderRadius: 2, margin: "0 auto 16px" }} />
+
+        {paso === "eleccion" && (
+          <>
+            <div style={{ fontFamily: "'Fraunces', Georgia, serif", fontSize: 16, fontWeight: 600, marginBottom: 14, color: "#2B2A26" }}>
+              ¿Este día os vais de casa o viene alguien a casa con HomeExchange? ¿Son vacaciones para los niños?
+            </div>
+            <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+              <button style={btnPrimary} onClick={() => elegir("viaje")}>Sí, nos vamos</button>
+              <button style={btnPrimary} onClick={() => elegir("homeexchange")}>Sí, vienen a casa con HomeExchange</button>
+              <button style={btnPrimary} onClick={() => elegir("vacaciones")}>Sí, son vacaciones para los niños</button>
+              <button style={btnGhost} onClick={() => elegir("cancelar")}>No, nada de lo anterior, cancelar</button>
+            </div>
+          </>
+        )}
+
+        {paso === "viaje" && (
+          <>
+            <div style={{ fontFamily: "'Fraunces', Georgia, serif", fontSize: 16, fontWeight: 600, marginBottom: 4, color: "#2B2A26" }}>Nos vamos de casa</div>
+            <label style={lbl}>¿Cuántos os vais?</label>
+            <input type="number" min="1" style={inp} value={personas} onChange={(e) => setPersonas(e.target.value)} />
+            <label style={lbl}>¿Por qué motivo os vais?</label>
+            <select style={inp} value={motivo} onChange={(e) => setMotivo(e.target.value)}>
+              <option value="Vacaciones">Vacaciones</option>
+              <option value="Trabajo">Trabajo</option>
+              <option value="Otros">Otros</option>
+            </select>
+            <label style={lbl}>¿Cuánto tiempo os vais? (días)</label>
+            <input type="number" min="1" style={inp} value={dias} onChange={(e) => setDias(e.target.value)} />
+            <label style={lbl}>¿A dónde os vais?</label>
+            <input type="text" style={inp} value={destino} onChange={(e) => setDestino(e.target.value)} placeholder="Destino" />
+            <div style={{ display: "flex", gap: 10, marginTop: 18 }}>
+              <button onClick={onClose} style={btnGhost}>Cancelar</button>
+              <button onClick={irAConfirmarComidas} style={btnPrimary}>Aceptar</button>
+            </div>
+          </>
+        )}
+
+        {paso === "confirmarComidas" && (
+          <>
+            <div style={{ fontFamily: "'Fraunces', Georgia, serif", fontSize: 16, fontWeight: 600, marginBottom: 10, color: "#2B2A26" }}>
+              ¿Quieres eliminar la planificación de comidas de esos días y sus ingredientes de la lista de la compra?
+            </div>
+            <div style={{ fontSize: 12.5, color: "#8A8577", marginBottom: 14, lineHeight: 1.4 }}>
+              Se borrarán las comidas planificadas para esos días y se intentará descontar los ingredientes correspondientes de la lista de la compra (el ajuste es aproximado; conviene revisar la lista después).
+            </div>
+            <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+              <button style={btnPrimary} onClick={() => confirmarComidas(true)}>Sí, eliminar</button>
+              <button style={btnGhost} onClick={() => confirmarComidas(false)}>No, dejar como estaba</button>
+            </div>
+          </>
+        )}
+
+        {paso === "homeexchange" && (
+          <>
+            <div style={{ fontFamily: "'Fraunces', Georgia, serif", fontSize: 16, fontWeight: 600, marginBottom: 4, color: "#2B2A26" }}>HomeExchange</div>
+            <label style={lbl}>¿Cuántos días vienen?</label>
+            <input type="number" min="1" style={inp} value={dias} onChange={(e) => setDias(e.target.value)} />
+            <div style={{ display: "flex", gap: 10, marginTop: 18 }}>
+              <button onClick={onClose} style={btnGhost}>Cancelar</button>
+              <button onClick={aceptarHomeExchange} style={btnPrimary}>Aceptar</button>
+            </div>
+          </>
+        )}
+
+        {paso === "vacaciones" && (
+          <>
+            <div style={{ fontFamily: "'Fraunces', Georgia, serif", fontSize: 16, fontWeight: 600, marginBottom: 4, color: "#2B2A26" }}>Vacaciones de los niños</div>
+            <label style={lbl}>¿Cuántos días tienen de vacaciones?</label>
+            <input type="number" min="1" style={inp} value={dias} onChange={(e) => setDias(e.target.value)} />
+            <div style={{ display: "flex", gap: 10, marginTop: 18 }}>
+              <button onClick={onClose} style={btnGhost}>Cancelar</button>
+              <button onClick={aceptarVacaciones} style={btnPrimary}>Aceptar</button>
+            </div>
+          </>
+        )}
       </div>
     </div>
   );
@@ -491,7 +645,7 @@ function Compra({ compra, setCompra }) {
 
 /* ---------- vista Calendario ---------- */
 
-function Calendario({ tasks, comidas, entreno, onOpenTask, onJump }) {
+function Calendario({ tasks, comidas, entreno, eventos, onOpenTask, onJump, onAddEvento, onDeleteEvento }) {
   const now = new Date();
   const [year, setYear] = useState(now.getFullYear());
   const [month, setMonth] = useState(now.getMonth());
@@ -503,6 +657,23 @@ function Calendario({ tasks, comidas, entreno, onOpenTask, onJump }) {
   const selComida = comidas[selected];
   const selEntreno = entreno[selected];
   const resumenComida = selComida ? Object.values(selComida).filter(Boolean)[0] : null;
+
+  const [eventoModalFecha, setEventoModalFecha] = useState(null);
+  const pressTimerRef = useRef(null);
+  const startPress = (iso) => () => {
+    pressTimerRef.current = setTimeout(() => setEventoModalFecha(iso), 500);
+  };
+  const clearPress = () => { if (pressTimerRef.current) clearTimeout(pressTimerRef.current); };
+  const eventosDia = eventosParaDia(eventos, selected);
+
+  const handleDeleteEvento = (ev) => {
+    const confirmMsg = ev.tipo === "viaje"
+      ? `¿Eliminar el viaje a "${ev.destino || "sin destino"}" (${ev.dias} día${ev.dias === 1 ? "" : "s"})?`
+      : `¿Eliminar "${TIPOS_EVENTO_ESPECIAL[ev.tipo].label}" (${ev.dias} día${ev.dias === 1 ? "" : "s"})?`;
+    if (window.confirm(confirmMsg)) {
+      onDeleteEvento(ev.id);
+    }
+  };
 
   return (
     <div style={{ padding: "4px 16px 16px" }}>
@@ -523,13 +694,24 @@ function Calendario({ tasks, comidas, entreno, onOpenTask, onJump }) {
           const hasEntreno = !!entreno[iso];
           const isSelected = iso === selected;
           const isToday = iso === todayISO();
+          const fondoEspecial = fondoEventosDia(eventos, iso);
           return (
-            <button key={i} onClick={() => setSelected(iso)} style={{ aspectRatio: "1", borderRadius: 8, border: isToday ? "1.5px solid #2B2A26" : "1px solid #E4DFD3", background: isSelected ? "#2B2A26" : "#FFFEFB", color: isSelected ? "#FBF9F4" : "#2B2A26", fontFamily: "'IBM Plex Mono', monospace", fontSize: 12.5, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 2, cursor: "pointer", padding: 0 }}>
+            <button
+              key={i}
+              onClick={() => setSelected(iso)}
+              onMouseDown={startPress(iso)}
+              onMouseUp={clearPress}
+              onMouseLeave={clearPress}
+              onTouchStart={startPress(iso)}
+              onTouchEnd={clearPress}
+              onTouchMove={clearPress}
+              onContextMenu={(e) => e.preventDefault()}
+              style={{ aspectRatio: "1", borderRadius: 8, border: isSelected ? "2px solid #2B2A26" : isToday ? "1.5px solid #2B2A26" : "1px solid #E4DFD3", background: fondoEspecial || "#FFFEFB", color: "#2B2A26", fontFamily: "'IBM Plex Mono', monospace", fontSize: 12.5, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 2, cursor: "pointer", padding: 0 }}>
               {day}
               <div style={{ display: "flex", gap: 2 }}>
-                {dt.slice(0, 2).map((t) => <span key={t.id} style={{ width: 4, height: 4, borderRadius: 2, background: isSelected ? "#FBF9F4" : CATEGORIAS[t.categoria]?.stripe || "#999" }} />)}
-                {hasComida && <span style={{ width: 4, height: 4, borderRadius: 2, background: isSelected ? "#FBF9F4" : "#C9A227" }} />}
-                {hasEntreno && <span style={{ width: 4, height: 4, borderRadius: 2, background: isSelected ? "#FBF9F4" : "#5C7A94" }} />}
+                {dt.slice(0, 2).map((t) => <span key={t.id} style={{ width: 4, height: 4, borderRadius: 2, background: CATEGORIAS[t.categoria]?.stripe || "#999" }} />)}
+                {hasComida && <span style={{ width: 4, height: 4, borderRadius: 2, background: "#C9A227" }} />}
+                {hasEntreno && <span style={{ width: 4, height: 4, borderRadius: 2, background: "#5C7A94" }} />}
               </div>
             </button>
           );
@@ -540,6 +722,26 @@ function Calendario({ tasks, comidas, entreno, onOpenTask, onJump }) {
         {selectedTasks.length === 0 && <div style={{ fontSize: 13, color: "#B5AF9E", fontStyle: "italic", marginBottom: 10 }}>Sin tareas ese día</div>}
         {selectedTasks.map((t) => <TaskCard key={t.id} task={t} onOpen={onOpenTask} />)}
 
+        {eventosDia.map((ev) => (
+          <div key={ev.id} style={{ position: "relative", background: "#FFFEFB", border: "1px solid #E4DFD3", borderLeft: `5px solid ${TIPOS_EVENTO_ESPECIAL[ev.tipo].color}`, borderRadius: 8, padding: "12px 40px 12px 14px", marginTop: 10 }}>
+            <button
+              onClick={() => handleDeleteEvento(ev)}
+              aria-label="Eliminar evento"
+              style={{ position: "absolute", top: 8, right: 8, width: 24, height: 24, borderRadius: 6, border: "1px solid #E4DFD3", background: "#FBEAE6", color: "#A8503D", fontSize: 13, lineHeight: "22px", cursor: "pointer", padding: 0 }}
+            >×</button>
+            <div style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: "0.04em", color: "#8A8577", marginBottom: 4 }}>
+              {TIPOS_EVENTO_ESPECIAL[ev.tipo].label}
+            </div>
+            {ev.tipo === "viaje" ? (
+              <div style={{ fontSize: 13.5, color: "#2B2A26" }}>
+                {ev.personas} persona{ev.personas === 1 ? "" : "s"} · {ev.motivo} · {ev.dias} día{ev.dias === 1 ? "" : "s"}{ev.destino ? ` · Destino: ${ev.destino}` : ""}
+              </div>
+            ) : (
+              <div style={{ fontSize: 13.5, color: "#2B2A26" }}>{ev.dias} día{ev.dias === 1 ? "" : "s"}</div>
+            )}
+          </div>
+        ))}
+
         <button onClick={() => onJump("comidas", selected)} style={{ display: "block", width: "100%", textAlign: "left", background: "#FFFEFB", border: "1px solid #E4DFD3", borderLeft: "5px solid #C9A227", borderRadius: 8, padding: "12px 14px", marginTop: 10, cursor: "pointer", fontFamily: "'Inter', system-ui, sans-serif" }}>
           <div style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: "0.04em", color: "#8A8577", marginBottom: 4 }}>🍽️ Comida</div>
           <div style={{ fontSize: 13.5, color: "#2B2A26" }}>{resumenComida ? (resumenComida.length > 70 ? resumenComida.slice(0, 70) + "…" : resumenComida) : "Toca para planificar"}</div>
@@ -549,6 +751,14 @@ function Calendario({ tasks, comidas, entreno, onOpenTask, onJump }) {
           <div style={{ fontSize: 13.5, color: "#2B2A26" }}>{selEntreno?.tipo || "Toca para planificar"}</div>
         </button>
       </div>
+
+      {eventoModalFecha && (
+        <EventoEspecialModal
+          fecha={eventoModalFecha}
+          onClose={() => setEventoModalFecha(null)}
+          onSave={(evento) => { onAddEvento(evento); setEventoModalFecha(null); }}
+        />
+      )}
     </div>
   );
 }
@@ -562,6 +772,7 @@ export default function App() {
   const [recetas, setRecetas] = useStore("recetas", recetasData);
   const [compra, setCompra] = useStore("compra", compraData);
   const [detalle, setDetalle] = useStore("entrenoDetalle", entrenoDetalleData);
+  const [eventosEspeciales, setEventosEspeciales] = useStore("eventosEspeciales", []);
 
   const [tab, setTab] = useState("calendario");
   const [focusDate, setFocusDate] = useState(todayISO());
@@ -585,6 +796,71 @@ export default function App() {
     setTasks(next);
     return { nuevos, actualizados };
   };
+
+  const quitarPlanificacionComidas = (fechaInicio, dias) => {
+    const fechas = [];
+    for (let i = 0; i < dias; i++) fechas.push(addDays(fechaInicio, i));
+
+    const restarPorSemana = {};
+    fechas.forEach((iso) => {
+      const rec = recetas[iso];
+      if (!rec) return;
+      const weekKey = Object.keys(compra).find((k) => iso >= compra[k].inicio && iso <= compra[k].fin);
+      if (!weekKey) return;
+      ["comida", "cena"].forEach((slot) => {
+        const receta = rec[slot];
+        if (!receta?.ingredientes?.length) return;
+        if (!restarPorSemana[weekKey]) restarPorSemana[weekKey] = [];
+        receta.ingredientes.forEach((ing) => {
+          if (ing.ingrediente) restarPorSemana[weekKey].push({ ingrediente: ing.ingrediente, cantidad: ing.cantidad, unidad: ing.unidad });
+        });
+      });
+    });
+
+    let nuevaCompra = { ...compra };
+    Object.entries(restarPorSemana).forEach(([weekKey, lista]) => {
+      const semana = nuevaCompra[weekKey];
+      if (!semana) return;
+      const nuevasCategorias = {};
+      Object.entries(semana.categorias).forEach(([cat, items]) => { nuevasCategorias[cat] = [...items]; });
+      lista.forEach(({ ingrediente, cantidad, unidad }) => {
+        const target = convertirUnidad(parseFloat(cantidad) || 0, unidad || "");
+        Object.keys(nuevasCategorias).forEach((cat) => {
+          nuevasCategorias[cat] = nuevasCategorias[cat].map((item) => {
+            if (!item.ingrediente || item.ingrediente.toLowerCase() !== ingrediente.toLowerCase()) return item;
+            const parsed = parseCantidadStr(item.cantidad);
+            if (!parsed) return item;
+            const itemBase = convertirUnidad(parsed.num, parsed.unidad);
+            if (itemBase.unidad !== target.unidad) return item;
+            const restante = itemBase.num - target.num;
+            if (restante <= 0.0001) return null;
+            let nuevoNum = restante, nuevaUnidad = itemBase.unidad;
+            if (parsed.unidad === "kg") { nuevoNum = restante / 1000; nuevaUnidad = "kg"; }
+            else if (parsed.unidad === "l") { nuevoNum = restante / 1000; nuevaUnidad = "l"; }
+            else { nuevaUnidad = parsed.unidad; }
+            return { ...item, cantidad: formatCantidadStr(nuevoNum, nuevaUnidad) };
+          }).filter(Boolean);
+        });
+      });
+      nuevaCompra[weekKey] = { ...semana, categorias: nuevasCategorias };
+    });
+    setCompra(nuevaCompra);
+
+    const nuevasComidas = { ...comidas };
+    const nuevasRecetas = { ...recetas };
+    fechas.forEach((iso) => { delete nuevasComidas[iso]; delete nuevasRecetas[iso]; });
+    setComidas(nuevasComidas);
+    setRecetas(nuevasRecetas);
+  };
+
+  const addEventoEspecial = (evento) => {
+    const { borrarComidas, ...eventoLimpio } = evento;
+    setEventosEspeciales([...eventosEspeciales, eventoLimpio]);
+    if (evento.tipo === "viaje" && borrarComidas) {
+      quitarPlanificacionComidas(evento.inicio, evento.dias);
+    }
+  };
+  const deleteEventoEspecial = (id) => setEventosEspeciales(eventosEspeciales.filter((e) => e.id !== id));
 
   const openTask = (t) => { setModalTask(t); setIsNew(false); };
   const openNewTask = () => { setModalTask(emptyTask()); setIsNew(true); };
@@ -627,7 +903,7 @@ export default function App() {
         </div>
       </div>
 
-      {tab === "calendario" && <Calendario tasks={tasks} comidas={comidas} entreno={entreno} onOpenTask={openTask} onJump={jump} />}
+      {tab === "calendario" && <Calendario tasks={tasks} comidas={comidas} entreno={entreno} eventos={eventosEspeciales} onOpenTask={openTask} onJump={jump} onAddEvento={addEventoEspecial} onDeleteEvento={deleteEventoEspecial} />}
       {tab === "comidas" && <Comidas date={focusDate} setDate={setFocusDate} comidas={comidas} setComidas={setComidas} recetas={recetas} setRecetas={setRecetas} />}
       {tab === "entreno" && <Entreno date={focusDate} setDate={setFocusDate} entreno={entreno} setEntreno={setEntreno} detalle={detalle} setDetalle={setDetalle} />}
       {tab === "compra" && <Compra compra={compra} setCompra={setCompra} />}
