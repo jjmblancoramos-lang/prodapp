@@ -1,6 +1,9 @@
 import React, { useState, useEffect, useCallback, useMemo } from "react";
 import comidasData from "./comidas-data.json";
 import entrenoData from "./entreno-data.json";
+import recetasData from "./recetas-data.json";
+import compraData from "./compra-data.json";
+import entrenoDetalleData from "./entreno-detalle-data.json";
 
 /* ---------- constantes de dominio ---------- */
 
@@ -9,54 +12,28 @@ const CATEGORIAS = {
   "Comunidad de Vecinos": { stripe: "#5C7A94", tag: "#EBF0F4" },
   "Personal": { stripe: "#9C7A54", tag: "#F3EDE4" },
 };
-
 const PRIORIDADES = { "Alto": "#A8503D", "Medio": "#D3A64B", "Bajo": "#96A88F" };
-
 const ESTADOS = [
-  { key: "hecho", label: "Hecho" },
-  { key: "en_curso", label: "En curso" },
-  { key: "bloqueado", label: "Bloqueado" },
-  { key: "backlog", label: "Backlog" },
+  { key: "hecho", label: "Hecho" }, { key: "en_curso", label: "En curso" },
+  { key: "bloqueado", label: "Bloqueado" }, { key: "backlog", label: "Backlog" },
 ];
-
 const SLOTS_COMIDA = [
-  { key: "desayuno", label: "Desayuno" },
-  { key: "almuerzo", label: "Almuerzo" },
-  { key: "comida", label: "Comida" },
-  { key: "merienda", label: "Merienda" },
-  { key: "cena", label: "Cena" },
+  { key: "desayuno", label: "Desayuno" }, { key: "almuerzo", label: "Almuerzo" },
+  { key: "comida", label: "Comida" }, { key: "merienda", label: "Merienda" }, { key: "cena", label: "Cena" },
 ];
+const SLOTS_CON_RECETA = ["comida", "cena"];
 
 const uid = () => Math.random().toString(36).slice(2, 10);
 const todayISO = () => new Date().toISOString().slice(0, 10);
+const emptyTask = () => ({ id: uid(), titulo: "", categoria: "Hijos", prioridad: "Medio", estado: "backlog", inicio: todayISO(), fin: "", motivoBloqueo: "", comentarios: "" });
+const emptyReceta = () => ({ titulo: "", nota: "", ingredientes: [], pasos: [] });
 
-const emptyTask = () => ({
-  id: uid(), titulo: "", categoria: "Hijos", prioridad: "Medio", estado: "backlog",
-  inicio: todayISO(), fin: "", motivoBloqueo: "", comentarios: "",
-});
+/* ---------- utilidades ---------- */
 
-/* ---------- utilidades de fecha ---------- */
-
-function fmtCorto(d) {
-  if (!d) return "";
-  const [y, m, day] = d.split("-");
-  return `${day}/${m}`;
-}
-function fmtLargo(iso) {
-  if (!iso) return "";
-  const d = new Date(iso + "T00:00:00");
-  return d.toLocaleDateString("es-ES", { weekday: "long", day: "numeric", month: "long", year: "numeric" });
-}
-function addDays(iso, delta) {
-  const d = new Date(iso + "T00:00:00");
-  d.setDate(d.getDate() + delta);
-  return d.toISOString().slice(0, 10);
-}
-function inRange(iso, start, end) {
-  if (!start) return false;
-  const e = end || start;
-  return iso >= start && iso <= e;
-}
+function fmtCorto(d) { if (!d) return ""; const [y, m, day] = d.split("-"); return `${day}/${m}`; }
+function fmtLargo(iso) { if (!iso) return ""; const d = new Date(iso + "T00:00:00"); return d.toLocaleDateString("es-ES", { weekday: "long", day: "numeric", month: "long", year: "numeric" }); }
+function addDays(iso, delta) { const d = new Date(iso + "T00:00:00"); d.setDate(d.getDate() + delta); return d.toISOString().slice(0, 10); }
+function inRange(iso, start, end) { if (!start) return false; const e = end || start; return iso >= start && iso <= e; }
 function monthMatrix(year, month) {
   const first = new Date(year, month, 1);
   const startDow = (first.getDay() + 6) % 7;
@@ -70,26 +47,25 @@ function monthMatrix(year, month) {
 const MESES = ["enero","febrero","marzo","abril","mayo","junio","julio","agosto","septiembre","octubre","noviembre","diciembre"];
 const DOW = ["L","M","X","J","V","S","D"];
 
-/* ---------- almacenamiento genérico (localStorage) ---------- */
+function shareWhatsApp(text) {
+  window.open(`https://wa.me/?text=${encodeURIComponent(text)}`, "_blank");
+}
+
+/* ---------- almacenamiento genérico ---------- */
 
 function useStore(key, seed) {
   const [data, setData] = useState(null);
-
   useEffect(() => {
     try {
       const raw = window.localStorage.getItem(key);
       setData(raw ? JSON.parse(raw) : seed);
-    } catch (e) {
-      setData(seed);
-    }
+    } catch (e) { setData(seed); }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
-
   const persist = useCallback((next) => {
     setData(next);
     try { window.localStorage.setItem(key, JSON.stringify(next)); } catch (e) {}
   }, [key]);
-
   return [data || seed, persist];
 }
 
@@ -97,18 +73,32 @@ function useStore(key, seed) {
 
 const lbl = { display: "block", fontSize: 11, textTransform: "uppercase", letterSpacing: "0.04em", color: "#8A8577", marginTop: 12, marginBottom: 4, fontFamily: "'IBM Plex Mono', monospace" };
 const inp = { width: "100%", padding: "9px 10px", borderRadius: 7, border: "1px solid #DDD6C7", background: "#FFFEFB", fontSize: 14.5, fontFamily: "'Inter', system-ui, sans-serif", boxSizing: "border-box", color: "#2B2A26" };
+const inpSm = { ...inp, padding: "7px 8px", fontSize: 13.5 };
 const btnBase = { flex: 1, padding: "11px 0", borderRadius: 8, border: "none", fontSize: 14, fontWeight: 600, cursor: "pointer", fontFamily: "'Inter', system-ui, sans-serif" };
 const btnPrimary = { ...btnBase, background: "#2B2A26", color: "#FBF9F4" };
 const btnGhost = { ...btnBase, background: "transparent", color: "#8A8577", border: "1px solid #DDD6C7" };
 const btnDanger = { ...btnBase, background: "#FBEAE6", color: "#A8503D" };
 const navBtn = { width: 34, height: 34, borderRadius: 8, border: "1px solid #E4DFD3", background: "#FFFEFB", fontSize: 18, cursor: "pointer", color: "#2B2A26", flexShrink: 0 };
+const sectionTitle = { fontFamily: "'Fraunces', Georgia, serif", fontSize: 14.5, fontWeight: 600, color: "#2B2A26", marginTop: 20, marginBottom: 10 };
+const removeBtn = { width: 26, height: 26, borderRadius: 6, border: "1px solid #E4DFD3", background: "#FFFEFB", color: "#A8503D", fontSize: 14, cursor: "pointer", flexShrink: 0 };
+const addLink = { background: "none", border: "none", color: "#5C7A94", fontSize: 13, fontWeight: 600, cursor: "pointer", padding: "6px 0", fontFamily: "'Inter', system-ui, sans-serif" };
 
-/* ---------- tareas: tarjeta + modal ---------- */
+function ShareButton({ getText, label }) {
+  return (
+    <button
+      onClick={() => shareWhatsApp(getText())}
+      style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 7, width: "100%", padding: "11px 0", borderRadius: 8, border: "1px solid #BFE3CB", background: "#F0FAF3", color: "#1F7A44", fontSize: 13.5, fontWeight: 600, cursor: "pointer", fontFamily: "'Inter', system-ui, sans-serif", marginTop: 14 }}
+    >
+      <span style={{ fontSize: 15 }}>↗</span> {label || "Compartir por WhatsApp"}
+    </button>
+  );
+}
+
+/* ---------- tareas ---------- */
 
 function CornerFold({ color }) {
   return <div style={{ position: "absolute", top: 0, right: 0, width: 0, height: 0, borderStyle: "solid", borderWidth: "0 22px 22px 0", borderColor: `transparent ${color} transparent transparent`, borderTopRightRadius: 6 }} />;
 }
-
 function TaskCard({ task, onOpen }) {
   const cat = CATEGORIAS[task.categoria] || CATEGORIAS["Personal"];
   return (
@@ -123,7 +113,6 @@ function TaskCard({ task, onOpen }) {
     </button>
   );
 }
-
 function TaskModal({ task, onSave, onDelete, onClose }) {
   const [form, setForm] = useState(task);
   useEffect(() => setForm(task), [task]);
@@ -135,10 +124,8 @@ function TaskModal({ task, onSave, onDelete, onClose }) {
         <label style={lbl}>Título</label>
         <input style={inp} value={form.titulo} onChange={set("titulo")} placeholder="¿Qué hay que hacer?" />
         <div style={{ display: "flex", gap: 10 }}>
-          <div style={{ flex: 1 }}><label style={lbl}>Categoría</label>
-            <select style={inp} value={form.categoria} onChange={set("categoria")}>{Object.keys(CATEGORIAS).map((c) => <option key={c} value={c}>{c}</option>)}</select></div>
-          <div style={{ flex: 1 }}><label style={lbl}>Prioridad</label>
-            <select style={inp} value={form.prioridad} onChange={set("prioridad")}>{Object.keys(PRIORIDADES).map((p) => <option key={p} value={p}>{p}</option>)}</select></div>
+          <div style={{ flex: 1 }}><label style={lbl}>Categoría</label><select style={inp} value={form.categoria} onChange={set("categoria")}>{Object.keys(CATEGORIAS).map((c) => <option key={c} value={c}>{c}</option>)}</select></div>
+          <div style={{ flex: 1 }}><label style={lbl}>Prioridad</label><select style={inp} value={form.prioridad} onChange={set("prioridad")}>{Object.keys(PRIORIDADES).map((p) => <option key={p} value={p}>{p}</option>)}</select></div>
         </div>
         <label style={lbl}>Estado</label>
         <select style={inp} value={form.estado} onChange={set("estado")}>{ESTADOS.map((e) => <option key={e.key} value={e.key}>{e.label}</option>)}</select>
@@ -159,7 +146,7 @@ function TaskModal({ task, onSave, onDelete, onClose }) {
   );
 }
 
-/* ---------- navegador de fecha (compartido por Comidas / Entreno) ---------- */
+/* ---------- navegador de fecha ---------- */
 
 function DateNav({ date, onChange }) {
   return (
@@ -171,37 +158,128 @@ function DateNav({ date, onChange }) {
   );
 }
 
+/* ---------- bloque de receta (comida / cena) ---------- */
+
+function RecetaBlock({ label, receta, onChange }) {
+  const r = receta || emptyReceta();
+  const update = (patch) => onChange({ ...r, ...patch });
+  const updateIngrediente = (i, patch) => {
+    const next = r.ingredientes.map((ing, idx) => (idx === i ? { ...ing, ...patch } : ing));
+    update({ ingredientes: next });
+  };
+  const addIngrediente = () => update({ ingredientes: [...r.ingredientes, { ingrediente: "", cantidad: "", unidad: "" }] });
+  const removeIngrediente = (i) => update({ ingredientes: r.ingredientes.filter((_, idx) => idx !== i) });
+  const pasosTexto = (r.pasos || []).join("\n");
+  const setPasos = (e) => update({ pasos: e.target.value.split("\n").filter((l) => l.trim() !== "") });
+
+  return (
+    <div style={{ background: "#FFFEFB", border: "1px solid #E4DFD3", borderRadius: 10, padding: 14, marginTop: 8 }}>
+      <div style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: "0.05em", color: "#8A8577", fontFamily: "'IBM Plex Mono', monospace", marginBottom: 8 }}>Receta — {label}</div>
+      <input style={inp} value={r.titulo} onChange={(e) => update({ titulo: e.target.value })} placeholder="Nombre del plato" />
+      <input style={{ ...inpSm, marginTop: 8 }} value={r.nota} onChange={(e) => update({ nota: e.target.value })} placeholder="Nota (opcional)" />
+
+      <div style={{ fontSize: 11, textTransform: "uppercase", color: "#8A8577", fontFamily: "'IBM Plex Mono', monospace", marginTop: 14, marginBottom: 6 }}>Ingredientes</div>
+      {r.ingredientes.map((ing, i) => (
+        <div key={i} style={{ display: "flex", gap: 6, marginBottom: 6, alignItems: "center" }}>
+          <input style={{ ...inpSm, flex: 3 }} value={ing.ingrediente} onChange={(e) => updateIngrediente(i, { ingrediente: e.target.value })} placeholder="Ingrediente" />
+          <input style={{ ...inpSm, flex: 1 }} value={ing.cantidad} onChange={(e) => updateIngrediente(i, { cantidad: e.target.value })} placeholder="Cant." />
+          <input style={{ ...inpSm, flex: 1 }} value={ing.unidad} onChange={(e) => updateIngrediente(i, { unidad: e.target.value })} placeholder="Ud." />
+          <button style={removeBtn} onClick={() => removeIngrediente(i)}>×</button>
+        </div>
+      ))}
+      <button style={addLink} onClick={addIngrediente}>+ Añadir ingrediente</button>
+
+      <div style={{ fontSize: 11, textTransform: "uppercase", color: "#8A8577", fontFamily: "'IBM Plex Mono', monospace", marginTop: 10, marginBottom: 6 }}>Elaboración (un paso por línea)</div>
+      <textarea style={{ ...inp, minHeight: 90 }} value={pasosTexto} onChange={setPasos} />
+    </div>
+  );
+}
+
+function recetaATexto(label, receta) {
+  if (!receta || !receta.titulo) return "";
+  let t = `*${label}: ${receta.titulo}*\n`;
+  if (receta.nota) t += `_${receta.nota}_\n`;
+  if (receta.ingredientes?.length) {
+    t += `\nIngredientes:\n`;
+    receta.ingredientes.forEach((ing) => { t += `• ${ing.ingrediente} — ${ing.cantidad} ${ing.unidad}\n`; });
+  }
+  if (receta.pasos?.length) {
+    t += `\nElaboración:\n`;
+    receta.pasos.forEach((p) => { t += `${p}\n`; });
+  }
+  return t;
+}
+
 /* ---------- vista Comidas ---------- */
 
-function Comidas({ date, setDate, comidas, setComidas }) {
+function Comidas({ date, setDate, comidas, setComidas, recetas, setRecetas }) {
   const dia = comidas[date] || {};
-  const setSlot = (slotKey) => (e) => {
-    const next = { ...comidas, [date]: { ...(comidas[date] || {}), [slotKey]: e.target.value } };
-    setComidas(next);
+  const recetasDia = recetas[date] || {};
+  const setSlot = (slotKey) => (e) => setComidas({ ...comidas, [date]: { ...(comidas[date] || {}), [slotKey]: e.target.value } });
+  const setReceta = (slotKey) => (nueva) => setRecetas({ ...recetas, [date]: { ...(recetas[date] || {}), [slotKey]: nueva } });
+
+  const compartir = () => {
+    let t = `*Comidas — ${fmtLargo(date)}*\n\n`;
+    SLOTS_COMIDA.forEach((s) => { if (dia[s.key]) t += `*${s.label}:* ${dia[s.key]}\n`; });
+    SLOTS_CON_RECETA.forEach((k) => {
+      const texto = recetaATexto(SLOTS_COMIDA.find((s) => s.key === k).label, recetasDia[k]);
+      if (texto) t += `\n${texto}`;
+    });
+    return t;
   };
+
   return (
     <div style={{ padding: "4px 16px 16px" }}>
       <DateNav date={date} onChange={setDate} />
       <div style={{ fontFamily: "'Fraunces', Georgia, serif", fontSize: 15, fontWeight: 600, textTransform: "capitalize", marginBottom: 14, color: "#2B2A26" }}>{fmtLargo(date)}</div>
       {SLOTS_COMIDA.map((s) => (
-        <div key={s.key} style={{ marginBottom: 14 }}>
+        <div key={s.key} style={{ marginBottom: 8 }}>
           <label style={lbl}>{s.label}</label>
           <textarea style={{ ...inp, minHeight: 54 }} value={dia[s.key] || ""} onChange={setSlot(s.key)} placeholder={`¿Qué toca de ${s.label.toLowerCase()}?`} />
+          {SLOTS_CON_RECETA.includes(s.key) && (
+            <RecetaBlock label={s.label} receta={recetasDia[s.key]} onChange={setReceta(s.key)} />
+          )}
         </div>
       ))}
+      <ShareButton getText={compartir} label="Compartir comidas del día" />
     </div>
   );
 }
 
 /* ---------- vista Entreno ---------- */
 
-function Entreno({ date, setDate, entreno, setEntreno }) {
+function Entreno({ date, setDate, entreno, setEntreno, detalle, setDetalle }) {
   const dia = entreno[date] || { diaSemana: "", semana: "", fase: "", tipo: "", notas: "", hecho: false };
+  const det = detalle[date] || { columnas: ["Bloque", "Ejercicio", "Notas"], filas: [] };
+
   const set = (k) => (e) => {
     const val = e.target.type === "checkbox" ? e.target.checked : e.target.value;
-    const next = { ...entreno, [date]: { ...(entreno[date] || {}), [k]: val } };
-    setEntreno(next);
+    setEntreno({ ...entreno, [date]: { ...(entreno[date] || {}), [k]: val } });
   };
+  const updateFila = (i, col, val) => {
+    const filas = det.filas.map((f, idx) => (idx === i ? { ...f, [col]: val } : f));
+    setDetalle({ ...detalle, [date]: { ...det, filas } });
+  };
+  const addFila = () => {
+    const nueva = {}; det.columnas.forEach((c) => (nueva[c] = ""));
+    setDetalle({ ...detalle, [date]: { ...det, filas: [...det.filas, nueva] } });
+  };
+  const removeFila = (i) => setDetalle({ ...detalle, [date]: { ...det, filas: det.filas.filter((_, idx) => idx !== i) } });
+
+  const compartir = () => {
+    let t = `*Entreno — ${fmtLargo(date)}*\n${dia.tipo || ""}\n`;
+    if (dia.fase) t += `Fase: ${dia.fase} · Semana ${dia.semana}\n`;
+    if (dia.notas) t += `_${dia.notas}_\n`;
+    if (det.filas.length) {
+      t += `\n`;
+      det.filas.forEach((f) => {
+        const partes = det.columnas.filter((c) => c !== "Notas" && f[c] !== "" && f[c] != null).map((c) => `${c}: ${f[c]}`);
+        t += `• ${partes.join(" · ")}${f["Notas"] ? ` — ${f["Notas"]}` : ""}\n`;
+      });
+    }
+    return t;
+  };
+
   return (
     <div style={{ padding: "4px 16px 16px" }}>
       <DateNav date={date} onChange={setDate} />
@@ -213,11 +291,92 @@ function Entreno({ date, setDate, entreno, setEntreno }) {
       <label style={lbl}>Tipo de día</label>
       <input style={inp} value={dia.tipo || ""} onChange={set("tipo")} placeholder="Ej. Carrera suave, Fuerza A…" />
       <label style={lbl}>Notas</label>
-      <textarea style={{ ...inp, minHeight: 60 }} value={dia.notas || ""} onChange={set("notas")} />
-      <label style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 14, fontSize: 14, color: "#2B2A26" }}>
+      <textarea style={{ ...inp, minHeight: 50 }} value={dia.notas || ""} onChange={set("notas")} />
+      <label style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 12, fontSize: 14, color: "#2B2A26" }}>
         <input type="checkbox" checked={!!dia.hecho} onChange={set("hecho")} style={{ width: 18, height: 18 }} />
         Sesión completada
       </label>
+
+      <div style={sectionTitle}>Detalle de la sesión</div>
+      {det.filas.map((fila, i) => (
+        <div key={i} style={{ background: "#FFFEFB", border: "1px solid #E4DFD3", borderRadius: 8, padding: 10, marginBottom: 8 }}>
+          {det.columnas.map((col) => (
+            <div key={col} style={{ marginBottom: 6 }}>
+              <label style={{ ...lbl, marginTop: 0 }}>{col}</label>
+              <input style={inpSm} value={fila[col] ?? ""} onChange={(e) => updateFila(i, col, e.target.value)} />
+            </div>
+          ))}
+          <button style={{ ...btnDanger, flex: "none", padding: "6px 14px", fontSize: 12.5 }} onClick={() => removeFila(i)}>Eliminar bloque</button>
+        </div>
+      ))}
+      <button style={addLink} onClick={addFila}>+ Añadir bloque de ejercicio</button>
+
+      <ShareButton getText={compartir} label="Compartir entreno del día" />
+    </div>
+  );
+}
+
+/* ---------- vista Compra ---------- */
+
+function Compra({ compra, setCompra }) {
+  const semanas = useMemo(() => Object.keys(compra).sort(), [compra]);
+  const [idx, setIdx] = useState(() => {
+    const hoy = todayISO();
+    const i = semanas.findIndex((s, ix) => hoy >= s && (ix === semanas.length - 1 || hoy < semanas[ix + 1]));
+    return i >= 0 ? i : 0;
+  });
+  const semanaKey = semanas[idx];
+  const semana = compra[semanaKey] || { categorias: {} };
+
+  const updateItem = (cat, i, patch) => {
+    const items = semana.categorias[cat].map((it, idx2) => (idx2 === i ? { ...it, ...patch } : it));
+    setCompra({ ...compra, [semanaKey]: { ...semana, categorias: { ...semana.categorias, [cat]: items } } });
+  };
+  const addItem = (cat) => {
+    const items = [...(semana.categorias[cat] || []), { ingrediente: "", cantidad: "", gramos: null }];
+    setCompra({ ...compra, [semanaKey]: { ...semana, categorias: { ...semana.categorias, [cat]: items } } });
+  };
+  const removeItem = (cat, i) => {
+    const items = semana.categorias[cat].filter((_, idx2) => idx2 !== i);
+    setCompra({ ...compra, [semanaKey]: { ...semana, categorias: { ...semana.categorias, [cat]: items } } });
+  };
+
+  const compartir = () => {
+    let t = `*Lista de la compra*\n${semana.titulo || semanaKey}\n`;
+    Object.entries(semana.categorias || {}).forEach(([cat, items]) => {
+      if (!items.length) return;
+      t += `\n*${cat}*\n`;
+      items.forEach((it) => { if (it.ingrediente) t += `• ${it.ingrediente} — ${it.cantidad}\n`; });
+    });
+    return t;
+  };
+
+  if (!semanaKey) return <div style={{ padding: 16, color: "#B5AF9E", fontStyle: "italic" }}>Sin listas de la compra todavía</div>;
+
+  return (
+    <div style={{ padding: "4px 16px 16px" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
+        <button style={navBtn} disabled={idx === 0} onClick={() => setIdx((i) => Math.max(0, i - 1))}>‹</button>
+        <div style={{ flex: 1, textAlign: "center", fontFamily: "'Fraunces', Georgia, serif", fontSize: 14, fontWeight: 600 }}>
+          {fmtCorto(semana.inicio)} — {fmtCorto(semana.fin)}
+        </div>
+        <button style={navBtn} disabled={idx === semanas.length - 1} onClick={() => setIdx((i) => Math.min(semanas.length - 1, i + 1))}>›</button>
+      </div>
+
+      {Object.entries(semana.categorias || {}).map(([cat, items]) => (
+        <div key={cat}>
+          <div style={sectionTitle}>{cat}</div>
+          {items.map((it, i) => (
+            <div key={i} style={{ display: "flex", gap: 6, marginBottom: 6, alignItems: "center" }}>
+              <input style={{ ...inpSm, flex: 3 }} value={it.ingrediente} onChange={(e) => updateItem(cat, i, { ingrediente: e.target.value })} />
+              <input style={{ ...inpSm, flex: 1.4 }} value={it.cantidad} onChange={(e) => updateItem(cat, i, { cantidad: e.target.value })} />
+              <button style={removeBtn} onClick={() => removeItem(cat, i)}>×</button>
+            </div>
+          ))}
+          <button style={addLink} onClick={() => addItem(cat)}>+ Añadir a {cat.toLowerCase()}</button>
+        </div>
+      ))}
+      <ShareButton getText={compartir} label="Compartir lista de la compra" />
     </div>
   );
 }
@@ -229,19 +388,13 @@ function Calendario({ tasks, comidas, entreno, onOpenTask, onJump }) {
   const [year, setYear] = useState(now.getFullYear());
   const [month, setMonth] = useState(now.getMonth());
   const [selected, setSelected] = useState(todayISO());
-
   const cells = useMemo(() => monthMatrix(year, month), [year, month]);
-  const changeMonth = (delta) => {
-    let m = month + delta, y = year;
-    if (m < 0) { m = 11; y -= 1; } if (m > 11) { m = 0; y += 1; }
-    setMonth(m); setYear(y);
-  };
-
+  const changeMonth = (delta) => { let m = month + delta, y = year; if (m < 0) { m = 11; y -= 1; } if (m > 11) { m = 0; y += 1; } setMonth(m); setYear(y); };
   const tasksForDay = (iso) => tasks.filter((t) => inRange(iso, t.inicio, t.fin));
   const selectedTasks = tasksForDay(selected);
   const selComida = comidas[selected];
   const selEntreno = entreno[selected];
-  const resumenComida = selComida ? Object.values(selComida).filter(Boolean).slice(0, 1)[0] : null;
+  const resumenComida = selComida ? Object.values(selComida).filter(Boolean)[0] : null;
 
   return (
     <div style={{ padding: "4px 16px 16px" }}>
@@ -274,10 +427,8 @@ function Calendario({ tasks, comidas, entreno, onOpenTask, onJump }) {
           );
         })}
       </div>
-
       <div style={{ marginTop: 18 }}>
         <div style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: "0.05em", color: "#8A8577", fontFamily: "'IBM Plex Mono', monospace", marginBottom: 8 }}>{fmtCorto(selected)}</div>
-
         {selectedTasks.length === 0 && <div style={{ fontSize: 13, color: "#B5AF9E", fontStyle: "italic", marginBottom: 10 }}>Sin tareas ese día</div>}
         {selectedTasks.map((t) => <TaskCard key={t.id} task={t} onOpen={onOpenTask} />)}
 
@@ -285,7 +436,6 @@ function Calendario({ tasks, comidas, entreno, onOpenTask, onJump }) {
           <div style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: "0.04em", color: "#8A8577", marginBottom: 4 }}>🍽️ Comida</div>
           <div style={{ fontSize: 13.5, color: "#2B2A26" }}>{resumenComida ? (resumenComida.length > 70 ? resumenComida.slice(0, 70) + "…" : resumenComida) : "Toca para planificar"}</div>
         </button>
-
         <button onClick={() => onJump("entreno", selected)} style={{ display: "block", width: "100%", textAlign: "left", background: "#FFFEFB", border: "1px solid #E4DFD3", borderLeft: "5px solid #5C7A94", borderRadius: 8, padding: "12px 14px", marginTop: 10, cursor: "pointer", fontFamily: "'Inter', system-ui, sans-serif" }}>
           <div style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: "0.04em", color: "#8A8577", marginBottom: 4 }}>🏃 Entreno {selEntreno?.hecho ? "· hecho ✓" : ""}</div>
           <div style={{ fontSize: 13.5, color: "#2B2A26" }}>{selEntreno?.tipo || "Toca para planificar"}</div>
@@ -301,6 +451,9 @@ export default function App() {
   const [tasks, setTasks] = useStore("tasks", []);
   const [comidas, setComidas] = useStore("comidas", comidasData);
   const [entreno, setEntreno] = useStore("entreno", entrenoData);
+  const [recetas, setRecetas] = useStore("recetas", recetasData);
+  const [compra, setCompra] = useStore("compra", compraData);
+  const [detalle, setDetalle] = useStore("entrenoDetalle", entrenoDetalleData);
 
   const [tab, setTab] = useState("calendario");
   const [focusDate, setFocusDate] = useState(todayISO());
@@ -315,13 +468,13 @@ export default function App() {
     setModalTask(null);
   };
   const deleteTask = (id) => { setTasks(tasks.filter((t) => t.id !== id)); setModalTask(null); };
-
   const jump = (destTab, date) => { setFocusDate(date); setTab(destTab); };
 
   const TABS = [
     { key: "calendario", label: "Calendario" },
     { key: "comidas", label: "Comidas" },
     { key: "entreno", label: "Entreno" },
+    { key: "compra", label: "Compra" },
   ];
 
   return (
@@ -334,7 +487,7 @@ export default function App() {
 
       <div style={{ padding: "20px 16px 12px", position: "sticky", top: 0, background: "#F6F3EC", zIndex: 10, borderBottom: "1px solid #E4DFD3" }}>
         <div style={{ fontFamily: "'Fraunces', Georgia, serif", fontSize: 22, fontWeight: 700, color: "#2B2A26", marginBottom: 12 }}>Casa &amp; Comunidad</div>
-        <div style={{ display: "flex", gap: 6 }}>
+        <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
           {TABS.map((t) => (
             <button key={t.key} onClick={() => setTab(t.key)} style={{ padding: "7px 14px", borderRadius: 20, border: "none", fontSize: 13, fontWeight: 600, cursor: "pointer", background: tab === t.key ? "#2B2A26" : "#EDEAE1", color: tab === t.key ? "#FBF9F4" : "#6B665A", fontFamily: "'Inter', system-ui, sans-serif" }}>
               {t.label}
@@ -344,8 +497,9 @@ export default function App() {
       </div>
 
       {tab === "calendario" && <Calendario tasks={tasks} comidas={comidas} entreno={entreno} onOpenTask={openTask} onJump={jump} />}
-      {tab === "comidas" && <Comidas date={focusDate} setDate={setFocusDate} comidas={comidas} setComidas={setComidas} />}
-      {tab === "entreno" && <Entreno date={focusDate} setDate={setFocusDate} entreno={entreno} setEntreno={setEntreno} />}
+      {tab === "comidas" && <Comidas date={focusDate} setDate={setFocusDate} comidas={comidas} setComidas={setComidas} recetas={recetas} setRecetas={setRecetas} />}
+      {tab === "entreno" && <Entreno date={focusDate} setDate={setFocusDate} entreno={entreno} setEntreno={setEntreno} detalle={detalle} setDetalle={setDetalle} />}
+      {tab === "compra" && <Compra compra={compra} setCompra={setCompra} />}
 
       {tab === "calendario" && (
         <button onClick={openNewTask} aria-label="Añadir tarea" style={{ position: "fixed", bottom: 20, right: 20, width: 54, height: 54, borderRadius: 27, background: "#2B2A26", color: "#FBF9F4", border: "none", fontSize: 26, lineHeight: "54px", boxShadow: "0 4px 12px rgba(43,42,38,0.3)", cursor: "pointer" }}>+</button>
