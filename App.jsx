@@ -51,6 +51,58 @@ function shareWhatsApp(text) {
   window.open(`https://wa.me/?text=${encodeURIComponent(text)}`, "_blank");
 }
 
+/* ---------- importador de .ics (Google Calendar / cualquier calendario estándar) ---------- */
+
+function unescapeICS(t) {
+  return (t || "").replace(/\\n/g, "\n").replace(/\\,/g, ",").replace(/\\;/g, ";").replace(/\\\\/g, "\\");
+}
+function parseICSDateTime(v) {
+  const clean = (v || "").replace(/[^0-9TZ]/g, "");
+  const datePart = clean.slice(0, 8);
+  if (datePart.length < 8) return { iso: null, hora: null };
+  const iso = `${datePart.slice(0, 4)}-${datePart.slice(4, 6)}-${datePart.slice(6, 8)}`;
+  let hora = null;
+  const tIdx = clean.indexOf("T");
+  if (tIdx !== -1) {
+    const tp = clean.slice(tIdx + 1, tIdx + 5);
+    if (tp.length === 4) hora = `${tp.slice(0, 2)}:${tp.slice(2, 4)}`;
+  }
+  return { iso, hora };
+}
+function parseICS(text) {
+  const rawLines = text.split(/\r\n|\n|\r/);
+  const lines = [];
+  rawLines.forEach((line) => {
+    if ((line.startsWith(" ") || line.startsWith("\t")) && lines.length) lines[lines.length - 1] += line.slice(1);
+    else lines.push(line);
+  });
+  const events = [];
+  let cur = null;
+  lines.forEach((line) => {
+    if (line.startsWith("BEGIN:VEVENT")) cur = {};
+    else if (line.startsWith("END:VEVENT")) { if (cur) events.push(cur); cur = null; }
+    else if (cur) {
+      const idx = line.indexOf(":");
+      if (idx === -1) return;
+      const key = line.slice(0, idx).split(";")[0];
+      cur[key] = line.slice(idx + 1);
+    }
+  });
+  return events.map((e) => {
+    const inicio = parseICSDateTime(e.DTSTART);
+    const fin = parseICSDateTime(e.DTEND);
+    const horaTxt = inicio.hora ? `Hora: ${inicio.hora}${fin.hora ? ` – ${fin.hora}` : ""}` : "";
+    const partesComentario = [horaTxt, e.LOCATION ? `Lugar: ${unescapeICS(e.LOCATION)}` : "", unescapeICS(e.DESCRIPTION)].filter(Boolean);
+    return {
+      gcalUid: e.UID || null,
+      titulo: unescapeICS(e.SUMMARY) || "(sin título)",
+      inicio: inicio.iso,
+      fin: fin.iso || inicio.iso,
+      comentarios: partesComentario.join("\n"),
+    };
+  }).filter((e) => e.inicio);
+}
+
 /* ---------- almacenamiento genérico ---------- */
 
 function useStore(key, seed) {
@@ -140,6 +192,62 @@ function TaskModal({ task, onSave, onDelete, onClose }) {
           <button onClick={onClose} style={btnGhost}>Cancelar</button>
           {onDelete && <button onClick={() => onDelete(form.id)} style={btnDanger}>Eliminar</button>}
           <button onClick={() => onSave(form)} style={btnPrimary}>Guardar</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ---------- importar Google Calendar ---------- */
+
+function ImportModal({ onImport, onClose }) {
+  const [categoria, setCategoria] = useState("Personal");
+  const [estado, setEstado] = useState(null); // null | {procesando} | {ok, nuevos, actualizados} | {error}
+
+  const handleFile = (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    setEstado({ procesando: true });
+    const reader = new FileReader();
+    reader.onload = () => {
+      try {
+        const eventos = parseICS(reader.result);
+        if (!eventos.length) { setEstado({ error: "No se ha encontrado ningún evento en ese archivo." }); return; }
+        const { nuevos, actualizados } = onImport(eventos, categoria);
+        setEstado({ ok: true, nuevos, actualizados });
+      } catch (err) {
+        setEstado({ error: "No se ha podido leer el archivo. ¿Es un .ics válido?" });
+      }
+    };
+    reader.readAsText(file);
+  };
+
+  return (
+    <div style={{ position: "fixed", inset: 0, background: "rgba(43,42,38,0.45)", display: "flex", alignItems: "flex-end", justifyContent: "center", zIndex: 50 }} onClick={onClose}>
+      <div onClick={(e) => e.stopPropagation()} style={{ background: "#FBF9F4", width: "100%", maxWidth: 480, maxHeight: "90vh", overflowY: "auto", borderTopLeftRadius: 16, borderTopRightRadius: 16, padding: 20, fontFamily: "'Inter', system-ui, sans-serif" }}>
+        <div style={{ width: 40, height: 4, background: "#DDD6C7", borderRadius: 2, margin: "0 auto 16px" }} />
+        <div style={{ fontFamily: "'Fraunces', Georgia, serif", fontSize: 17, fontWeight: 600, marginBottom: 10 }}>Importar de Google Calendar</div>
+        <div style={{ fontSize: 13, color: "#6B665A", lineHeight: 1.5, marginBottom: 14 }}>
+          1. En Google Calendar (calendar.google.com), entra en Ajustes del calendario que quieras importar.<br />
+          2. Busca "Integrar calendario" y copia la "Dirección secreta en formato iCal".<br />
+          3. Pega esa dirección en una pestaña nueva del navegador — se descargará un archivo .ics.<br />
+          4. Selecciona ese archivo aquí abajo.
+        </div>
+
+        <label style={lbl}>Categoría para los eventos importados</label>
+        <select style={inp} value={categoria} onChange={(e) => setCategoria(e.target.value)}>
+          {Object.keys(CATEGORIAS).map((c) => <option key={c} value={c}>{c}</option>)}
+        </select>
+
+        <label style={lbl}>Archivo .ics</label>
+        <input type="file" accept=".ics,text/calendar" onChange={handleFile} style={{ ...inp, padding: 8 }} />
+
+        {estado?.procesando && <div style={{ marginTop: 12, fontSize: 13, color: "#8A8577" }}>Procesando…</div>}
+        {estado?.error && <div style={{ marginTop: 12, fontSize: 13, color: "#A8503D" }}>{estado.error}</div>}
+        {estado?.ok && <div style={{ marginTop: 12, fontSize: 13, color: "#1F7A44" }}>Importados {estado.nuevos} eventos nuevos{estado.actualizados ? ` y actualizados ${estado.actualizados}` : ""}.</div>}
+
+        <div style={{ display: "flex", gap: 10, marginTop: 18 }}>
+          <button onClick={onClose} style={btnPrimary}>Cerrar</button>
         </div>
       </div>
     </div>
@@ -459,6 +567,24 @@ export default function App() {
   const [focusDate, setFocusDate] = useState(todayISO());
   const [modalTask, setModalTask] = useState(null);
   const [isNew, setIsNew] = useState(false);
+  const [showImport, setShowImport] = useState(false);
+
+  const importarEventos = (eventos, categoria) => {
+    let nuevos = 0, actualizados = 0;
+    let next = [...tasks];
+    eventos.forEach((ev) => {
+      const idxExiste = ev.gcalUid ? next.findIndex((t) => t.gcalUid === ev.gcalUid) : -1;
+      if (idxExiste >= 0) {
+        next[idxExiste] = { ...next[idxExiste], titulo: ev.titulo, inicio: ev.inicio, fin: ev.fin, comentarios: ev.comentarios };
+        actualizados++;
+      } else {
+        next.push({ id: uid(), titulo: ev.titulo, categoria, prioridad: "Medio", estado: "backlog", inicio: ev.inicio, fin: ev.fin, motivoBloqueo: "", comentarios: ev.comentarios, gcalUid: ev.gcalUid });
+        nuevos++;
+      }
+    });
+    setTasks(next);
+    return { nuevos, actualizados };
+  };
 
   const openTask = (t) => { setModalTask(t); setIsNew(false); };
   const openNewTask = () => { setModalTask(emptyTask()); setIsNew(true); };
@@ -487,12 +613,17 @@ export default function App() {
 
       <div style={{ padding: "20px 16px 12px", position: "sticky", top: 0, background: "#F6F3EC", zIndex: 10, borderBottom: "1px solid #E4DFD3" }}>
         <div style={{ fontFamily: "'Fraunces', Georgia, serif", fontSize: 22, fontWeight: 700, color: "#2B2A26", marginBottom: 12 }}>Casa &amp; Comunidad</div>
-        <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+        <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
           {TABS.map((t) => (
             <button key={t.key} onClick={() => setTab(t.key)} style={{ padding: "7px 14px", borderRadius: 20, border: "none", fontSize: 13, fontWeight: 600, cursor: "pointer", background: tab === t.key ? "#2B2A26" : "#EDEAE1", color: tab === t.key ? "#FBF9F4" : "#6B665A", fontFamily: "'Inter', system-ui, sans-serif" }}>
               {t.label}
             </button>
           ))}
+          {tab === "calendario" && (
+            <button onClick={() => setShowImport(true)} style={{ padding: "7px 12px", borderRadius: 20, border: "1px solid #DDD6C7", fontSize: 13, fontWeight: 600, cursor: "pointer", background: "#FFFEFB", color: "#5C7A94", fontFamily: "'Inter', system-ui, sans-serif" }}>
+              ⇩ Importar
+            </button>
+          )}
         </div>
       </div>
 
@@ -506,6 +637,7 @@ export default function App() {
       )}
 
       {modalTask && <TaskModal task={modalTask} onSave={saveTask} onDelete={isNew ? null : deleteTask} onClose={() => setModalTask(null)} />}
+      {showImport && <ImportModal onImport={importarEventos} onClose={() => setShowImport(false)} />}
     </div>
   );
 }
