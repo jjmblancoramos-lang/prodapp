@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef } from "react";
+import * as XLSX from "xlsx";
 import comidasData from "./comidas-data.json";
 import entrenoData from "./entreno-data.json";
 import recetasData from "./recetas-data.json";
@@ -76,7 +77,7 @@ function fondoEventosDia(eventos, iso) {
   return `linear-gradient(135deg, ${stops})`;
 }
 
-/* ---------- ayudas para restar ingredientes de la lista de la compra ---------- */
+/* ---------- ayudas para restar/sumar ingredientes de la lista de la compra ---------- */
 
 function parseCantidadStr(str) {
   if (!str) return null;
@@ -147,6 +148,185 @@ function parseICS(text) {
       comentarios: partesComentario.join("\n"),
     };
   }).filter((e) => e.inicio);
+}
+
+/* ---------- importador de Excel (planificación / recetario / compra / entrenamiento) ---------- */
+
+function excelDateToISO(value) {
+  if (typeof value === "number") {
+    const d = XLSX.SSF.parse_date_code(value);
+    return `${d.y}-${String(d.m).padStart(2, "0")}-${String(d.d).padStart(2, "0")}`;
+  }
+  const m = String(value || "").trim().match(/(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})/);
+  if (!m) return null;
+  return `${m[3]}-${m[2].padStart(2, "0")}-${m[1].padStart(2, "0")}`;
+}
+function parseFechaLarga(texto) {
+  const meses = { enero:1,febrero:2,marzo:3,abril:4,mayo:5,junio:6,julio:7,agosto:8,septiembre:9,octubre:10,noviembre:11,diciembre:12 };
+  const m = (texto || "").toLowerCase().match(/(\d{1,2})\s+de\s+(\w+)\s+de\s+(\d{4})/);
+  if (!m) return null;
+  const mes = meses[m[2]];
+  if (!mes) return null;
+  return `${m[3]}-${String(mes).padStart(2, "0")}-${String(m[1]).padStart(2, "0")}`;
+}
+function sheetToRows(sheet) {
+  return XLSX.utils.sheet_to_json(sheet, { header: 1, defval: "" });
+}
+
+function parsePlanificacionSemanal(workbook) {
+  const resultado = {};
+  workbook.SheetNames.forEach((nombreHoja) => {
+    const rows = sheetToRows(workbook.Sheets[nombreHoja]);
+    const headerRowIdx = rows.findIndex((r) => r.some((c) => excelDateToISO(c)));
+    if (headerRowIdx === -1) return;
+    const columnasFecha = {};
+    rows[headerRowIdx].forEach((cell, colIdx) => { const iso = excelDateToISO(cell); if (iso) columnasFecha[colIdx] = iso; });
+    const mapaSlot = { desayuno: "desayuno", almuerzo: "almuerzo", comida: "comida", merienda: "merienda", cena: "cena" };
+    for (let r = headerRowIdx + 1; r < rows.length; r++) {
+      const slot = mapaSlot[String(rows[r][0] || "").trim().toLowerCase()];
+      if (!slot) continue;
+      Object.entries(columnasFecha).forEach(([colIdx, iso]) => {
+        const texto = String(rows[r][colIdx] || "").trim();
+        if (!texto) return;
+        if (!resultado[iso]) resultado[iso] = {};
+        resultado[iso][slot] = texto;
+      });
+    }
+  });
+  return resultado;
+}
+
+function parseRecetarioDiario(workbook) {
+  const resultado = {};
+  workbook.SheetNames.forEach((nombreHoja) => {
+    const rows = sheetToRows(workbook.Sheets[nombreHoja]);
+    const iso = parseFechaLarga(String(rows[0]?.[0] || "")) || excelDateToISO(nombreHoja);
+    if (!iso) return;
+    const bloques = { comida: null, cena: null };
+    let bloqueActual = null, modo = null;
+    for (let r = 0; r < rows.length; r++) {
+      const a = String(rows[r][0] || "").trim();
+      if (/^COMIDA\s*—/i.test(a)) { bloqueActual = "comida"; bloques.comida = { titulo: "", nota: "", ingredientes: [], pasos: [] }; modo = null; continue; }
+      if (/^CENA\s*—/i.test(a)) { bloqueActual = "cena"; bloques.cena = { titulo: "", nota: "", ingredientes: [], pasos: [] }; modo = null; continue; }
+      if (!bloqueActual) continue;
+      if (/^INGREDIENTES/i.test(a)) { modo = "ingredientes-header"; continue; }
+      if (/^ELABORACI[ÓO]N/i.test(a)) { modo = "elaboracion"; continue; }
+      if (modo === "ingredientes-header") { if (a.toLowerCase() === "ingrediente") modo = "ingredientes"; continue; }
+      if (modo === "ingredientes") {
+        if (!a) { modo = null; continue; }
+        bloques[bloqueActual].ingredientes.push({ ingrediente: a, cantidad: String(rows[r][1] ?? ""), unidad: String(rows[r][2] ?? "") });
+        continue;
+      }
+      if (modo === "elaboracion") { if (a) bloques[bloqueActual].pasos.push(a.replace(/^\d+\.\s*/, "")); continue; }
+      if (!bloques[bloqueActual].titulo && a) { bloques[bloqueActual].titulo = a; continue; }
+      if (!bloques[bloqueActual].nota && a) { bloques[bloqueActual].nota = a; continue; }
+    }
+    resultado[iso] = bloques;
+  });
+  return resultado;
+}
+
+function parseListaCompraSemanal(workbook) {
+  const resultado = {};
+  workbook.SheetNames.forEach((nombreHoja) => {
+    const rows = sheetToRows(workbook.Sheets[nombreHoja]);
+    const titulo = String(rows[0]?.[0] || "");
+    const fechas = titulo.match(/(\d{1,2}\/\d{1,2}\/\d{4})/g) || [];
+    const inicio = fechas[0] ? excelDateToISO(fechas[0]) : null;
+    const fin = fechas[1] ? excelDateToISO(fechas[1]) : null;
+    if (!inicio) return;
+    const categorias = {};
+    let catActual = null, enHeader = false;
+    for (let r = 1; r < rows.length; r++) {
+      const a = String(rows[r][0] || "").trim();
+      const b = String(rows[r][1] || "").trim();
+      if (!a && !b) { catActual = null; enHeader = false; continue; }
+      if (a && !b && a === a.toUpperCase() && a.length > 2) { catActual = a; categorias[catActual] = []; enHeader = true; continue; }
+      if (enHeader && a.toLowerCase() === "ingrediente") { enHeader = false; continue; }
+      if (catActual && a) categorias[catActual].push({ ingrediente: a, cantidad: b, gramos: rows[r][2] || null });
+    }
+    resultado[inicio] = { inicio, fin, categorias };
+  });
+  return resultado;
+}
+
+function parsePlanEntrenamiento(workbook) {
+  const resultadoEntreno = {}, resultadoDetalle = {};
+  workbook.SheetNames.forEach((nombreHoja) => {
+    const rows = sheetToRows(workbook.Sheets[nombreHoja]);
+    const cab = String(rows[0]?.[0] || "");
+    const fechaMatch = cab.match(/(\d{1,2}\/\d{1,2}\/\d{4})/);
+    if (!fechaMatch) return;
+    const iso = excelDateToISO(fechaMatch[1]);
+    const semanaMatch = cab.match(/Semana\s+(\d+)/i);
+    const infoFase = String(rows[1]?.[0] || "");
+    const faseMatch = infoFase.match(/Fase:\s*([^|]+)/i);
+    const tipoMatch = infoFase.match(/\|\s*([^|—]+)/);
+    resultadoEntreno[iso] = { semana: semanaMatch ? semanaMatch[1] : "", fase: faseMatch ? faseMatch[1].trim() : "", tipo: tipoMatch ? tipoMatch[1].trim() : "", notas: "", hecho: false };
+    const headerIdx = rows.findIndex((r) => String(r[0]).trim().toLowerCase() === "bloque");
+    if (headerIdx === -1) return;
+    const filas = [];
+    for (let r = headerIdx + 1; r < rows.length; r++) {
+      const bloque = String(rows[r][0] || "").trim();
+      if (!bloque || /^TOTAL/i.test(bloque)) break;
+      filas.push({ "Bloque": bloque, "Ejercicio": String(rows[r][1] || ""), "Series": String(rows[r][2] || ""), "Repeticiones": String(rows[r][3] || ""), "Tempo": String(rows[r][4] || ""), "Descanso": String(rows[r][5] || ""), "Duración (min)": String(rows[r][6] || ""), "Notas": String(rows[r][8] || "") });
+    }
+    resultadoDetalle[iso] = { columnas: ["Bloque","Ejercicio","Series","Repeticiones","Tempo","Descanso","Duración (min)","Notas"], filas };
+  });
+  return { entreno: resultadoEntreno, detalle: resultadoDetalle };
+}
+
+/* ---------- fusión de datos importados: solo rellenar huecos, nunca sobrescribir ---------- */
+
+function fusionarComidasVacias(actual, nuevo) {
+  const r = { ...actual };
+  Object.entries(nuevo).forEach(([iso, dia]) => {
+    const ex = { ...(r[iso] || {}) };
+    Object.entries(dia).forEach(([slot, texto]) => { if (!ex[slot]) ex[slot] = texto; });
+    r[iso] = ex;
+  });
+  return r;
+}
+function fusionarRecetasVacias(actual, nuevo) {
+  const r = { ...actual };
+  Object.entries(nuevo).forEach(([iso, bloques]) => {
+    const ex = { ...(r[iso] || {}) };
+    ["comida", "cena"].forEach((slot) => { if (bloques[slot] && (!ex[slot] || !ex[slot].titulo)) ex[slot] = bloques[slot]; });
+    r[iso] = ex;
+  });
+  return r;
+}
+function fusionarEntrenoVacio(actual, nuevo) {
+  const r = { ...actual };
+  Object.entries(nuevo).forEach(([iso, dia]) => { if (!r[iso] || !r[iso].tipo) r[iso] = dia; });
+  return r;
+}
+function fusionarDetalleVacio(actual, nuevo) {
+  const r = { ...actual };
+  Object.entries(nuevo).forEach(([iso, det]) => { if (!r[iso] || !r[iso].filas?.length) r[iso] = det; });
+  return r;
+}
+function fusionarCompraSoloFaltante(actual, nuevo) {
+  const r = { ...actual };
+  Object.entries(nuevo).forEach(([weekKey, semanaNueva]) => {
+    const ex = r[weekKey];
+    if (!ex) { r[weekKey] = semanaNueva; return; }
+    const nuevasCategorias = {};
+    Object.entries(ex.categorias).forEach(([cat, items]) => { nuevasCategorias[cat] = [...items]; });
+    Object.entries(semanaNueva.categorias).forEach(([cat, itemsNuevos]) => {
+      if (!nuevasCategorias[cat]) nuevasCategorias[cat] = [];
+      itemsNuevos.forEach((itemNuevo) => {
+        const existente = nuevasCategorias[cat].find((it) => it.ingrediente.toLowerCase() === itemNuevo.ingrediente.toLowerCase());
+        if (!existente) { nuevasCategorias[cat].push(itemNuevo); return; }
+        const pActual = parseCantidadStr(existente.cantidad), pNuevo = parseCantidadStr(itemNuevo.cantidad);
+        if (!pActual || !pNuevo) return;
+        const bActual = convertirUnidad(pActual.num, pActual.unidad), bNuevo = convertirUnidad(pNuevo.num, pNuevo.unidad);
+        if (bActual.unidad === bNuevo.unidad && bNuevo.num > bActual.num) existente.cantidad = itemNuevo.cantidad;
+      });
+    });
+    r[weekKey] = { ...ex, categorias: nuevasCategorias };
+  });
+  return r;
 }
 
 /* ---------- almacenamiento genérico ---------- */
@@ -248,7 +428,7 @@ function TaskModal({ task, onSave, onDelete, onClose }) {
 
 function ImportModal({ onImport, onClose }) {
   const [categoria, setCategoria] = useState("Personal");
-  const [estado, setEstado] = useState(null); // null | {procesando} | {ok, nuevos, actualizados} | {error}
+  const [estado, setEstado] = useState(null);
 
   const handleFile = (e) => {
     const file = e.target.files[0];
@@ -295,6 +475,47 @@ function ImportModal({ onImport, onClose }) {
         <div style={{ display: "flex", gap: 10, marginTop: 18 }}>
           <button onClick={onClose} style={btnPrimary}>Cerrar</button>
         </div>
+      </div>
+    </div>
+  );
+}
+
+/* ---------- importar Excel (planificación / recetario / compra / entrenamiento) ---------- */
+
+function ImportExcelModal({ onImport, onClose }) {
+  const [estado, setEstado] = useState(null);
+  const handleFiles = async (e) => {
+    const files = Array.from(e.target.files || []);
+    if (!files.length) return;
+    setEstado({ procesando: true });
+    try {
+      for (const file of files) {
+        const buf = await file.arrayBuffer();
+        const wb = XLSX.read(buf, { type: "array" });
+        const nombre = file.name.toLowerCase();
+        if (nombre.includes("planificacion")) onImport("comidas", parsePlanificacionSemanal(wb));
+        else if (nombre.includes("recetario")) onImport("recetas", parseRecetarioDiario(wb));
+        else if (nombre.includes("compra")) onImport("compra", parseListaCompraSemanal(wb));
+        else if (nombre.includes("entrenamiento")) { const { entreno, detalle } = parsePlanEntrenamiento(wb); onImport("entreno", entreno); onImport("detalle", detalle); }
+      }
+      setEstado({ ok: true });
+    } catch (err) {
+      setEstado({ error: "No se pudo procesar alguno de los archivos. Revisa que el formato coincida con el esperado." });
+    }
+  };
+  return (
+    <div style={{ position: "fixed", inset: 0, background: "rgba(43,42,38,0.45)", display: "flex", alignItems: "flex-end", justifyContent: "center", zIndex: 55 }} onClick={onClose}>
+      <div onClick={(e) => e.stopPropagation()} style={{ background: "#FBF9F4", width: "100%", maxWidth: 480, maxHeight: "90vh", overflowY: "auto", borderTopLeftRadius: 16, borderTopRightRadius: 16, padding: 20, fontFamily: "'Inter', system-ui, sans-serif" }}>
+        <div style={{ width: 40, height: 4, background: "#DDD6C7", borderRadius: 2, margin: "0 auto 16px" }} />
+        <div style={{ fontFamily: "'Fraunces', Georgia, serif", fontSize: 17, fontWeight: 600, marginBottom: 10 }}>Importar planificación desde Excel</div>
+        <div style={{ fontSize: 13, color: "#6B665A", lineHeight: 1.5, marginBottom: 14 }}>
+          Selecciona uno o varios archivos (Planificación Semanal, Recetario Diario, Lista de la Compra, Plan de Entrenamiento). Solo se rellenan los días/campos vacíos; nada de lo que ya tengas se sobrescribe.
+        </div>
+        <input type="file" accept=".xlsx" multiple onChange={handleFiles} style={{ ...inp, padding: 8 }} />
+        {estado?.procesando && <div style={{ marginTop: 12, fontSize: 13, color: "#8A8577" }}>Procesando…</div>}
+        {estado?.error && <div style={{ marginTop: 12, fontSize: 13, color: "#A8503D" }}>{estado.error}</div>}
+        {estado?.ok && <div style={{ marginTop: 12, fontSize: 13, color: "#1F7A44" }}>Importación completada.</div>}
+        <div style={{ display: "flex", gap: 10, marginTop: 18 }}><button onClick={onClose} style={btnPrimary}>Cerrar</button></div>
       </div>
     </div>
   );
@@ -371,7 +592,7 @@ function EventoEspecialModal({ fecha, onSave, onClose }) {
               ¿Quieres eliminar la planificación de comidas de esos días y sus ingredientes de la lista de la compra?
             </div>
             <div style={{ fontSize: 12.5, color: "#8A8577", marginBottom: 14, lineHeight: 1.4 }}>
-              Se borrarán las comidas planificadas para esos días y se intentará descontar los ingredientes correspondientes de la lista de la compra (el ajuste es aproximado; conviene revisar la lista después).
+              Se borrarán las comidas planificadas para esos días y se intentará descontar los ingredientes correspondientes de la lista de la compra (el ajuste es aproximado; conviene revisar la lista después). Podrás deshacerlo si eliminas este mismo viaje más adelante.
             </div>
             <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
               <button style={btnPrimary} onClick={() => confirmarComidas(true)}>Sí, eliminar</button>
@@ -645,7 +866,7 @@ function Compra({ compra, setCompra }) {
 
 /* ---------- vista Calendario ---------- */
 
-function Calendario({ tasks, comidas, entreno, eventos, onOpenTask, onJump, onAddEvento, onDeleteEvento }) {
+function Calendario({ tasks, comidas, entreno, eventos, onOpenTask, onJump, onAddEvento, onDeleteEvento, onRestaurarSnapshot }) {
   const now = new Date();
   const [year, setYear] = useState(now.getFullYear());
   const [month, setMonth] = useState(now.getMonth());
@@ -670,9 +891,13 @@ function Calendario({ tasks, comidas, entreno, eventos, onOpenTask, onJump, onAd
     const confirmMsg = ev.tipo === "viaje"
       ? `¿Eliminar el viaje a "${ev.destino || "sin destino"}" (${ev.dias} día${ev.dias === 1 ? "" : "s"})?`
       : `¿Eliminar "${TIPOS_EVENTO_ESPECIAL[ev.tipo].label}" (${ev.dias} día${ev.dias === 1 ? "" : "s"})?`;
-    if (window.confirm(confirmMsg)) {
-      onDeleteEvento(ev.id);
+    if (!window.confirm(confirmMsg)) return;
+    if (ev.snapshot) {
+      if (window.confirm("Este viaje había eliminado planificación de comidas y ajustado la compra. ¿Quieres restaurarlas?")) {
+        onRestaurarSnapshot(ev.snapshot);
+      }
     }
+    onDeleteEvento(ev.id);
   };
 
   return (
@@ -735,6 +960,7 @@ function Calendario({ tasks, comidas, entreno, eventos, onOpenTask, onJump, onAd
             {ev.tipo === "viaje" ? (
               <div style={{ fontSize: 13.5, color: "#2B2A26" }}>
                 {ev.personas} persona{ev.personas === 1 ? "" : "s"} · {ev.motivo} · {ev.dias} día{ev.dias === 1 ? "" : "s"}{ev.destino ? ` · Destino: ${ev.destino}` : ""}
+                {ev.snapshot && <span style={{ display: "block", marginTop: 4, fontSize: 11.5, color: "#8A8577" }}>Comidas y compra ajustadas para este viaje</span>}
               </div>
             ) : (
               <div style={{ fontSize: 13.5, color: "#2B2A26" }}>{ev.dias} día{ev.dias === 1 ? "" : "s"}</div>
@@ -779,6 +1005,7 @@ export default function App() {
   const [modalTask, setModalTask] = useState(null);
   const [isNew, setIsNew] = useState(false);
   const [showImport, setShowImport] = useState(false);
+  const [showImportExcel, setShowImportExcel] = useState(false);
 
   const importarEventos = (eventos, categoria) => {
     let nuevos = 0, actualizados = 0;
@@ -797,9 +1024,25 @@ export default function App() {
     return { nuevos, actualizados };
   };
 
+  const importarExcel = (tipo, datos) => {
+    if (tipo === "comidas") setComidas((prev) => fusionarComidasVacias(prev, datos));
+    if (tipo === "recetas") setRecetas((prev) => fusionarRecetasVacias(prev, datos));
+    if (tipo === "entreno") setEntreno((prev) => fusionarEntrenoVacio(prev, datos));
+    if (tipo === "detalle") setDetalle((prev) => fusionarDetalleVacio(prev, datos));
+    if (tipo === "compra") setCompra((prev) => fusionarCompraSoloFaltante(prev, datos));
+  };
+
+  // quita comidas/recetas de esos días y ajusta la compra; devuelve un snapshot para poder deshacerlo
   const quitarPlanificacionComidas = (fechaInicio, dias) => {
     const fechas = [];
     for (let i = 0; i < dias; i++) fechas.push(addDays(fechaInicio, i));
+
+    const comidasPrevias = {};
+    const recetasPrevias = {};
+    fechas.forEach((iso) => {
+      if (comidas[iso]) comidasPrevias[iso] = comidas[iso];
+      if (recetas[iso]) recetasPrevias[iso] = recetas[iso];
+    });
 
     const restarPorSemana = {};
     fechas.forEach((iso) => {
@@ -816,6 +1059,9 @@ export default function App() {
         });
       });
     });
+
+    const compraPrevia = {};
+    Object.keys(restarPorSemana).forEach((weekKey) => { if (compra[weekKey]) compraPrevia[weekKey] = compra[weekKey]; });
 
     let nuevaCompra = { ...compra };
     Object.entries(restarPorSemana).forEach(([weekKey, lista]) => {
@@ -851,14 +1097,21 @@ export default function App() {
     fechas.forEach((iso) => { delete nuevasComidas[iso]; delete nuevasRecetas[iso]; });
     setComidas(nuevasComidas);
     setRecetas(nuevasRecetas);
+
+    return { comidasPrevias, recetasPrevias, compraPrevia };
+  };
+
+  const restaurarSnapshotComidas = (snapshot) => {
+    setComidas({ ...comidas, ...snapshot.comidasPrevias });
+    setRecetas({ ...recetas, ...snapshot.recetasPrevias });
+    setCompra({ ...compra, ...snapshot.compraPrevia });
   };
 
   const addEventoEspecial = (evento) => {
     const { borrarComidas, ...eventoLimpio } = evento;
-    setEventosEspeciales([...eventosEspeciales, eventoLimpio]);
-    if (evento.tipo === "viaje" && borrarComidas) {
-      quitarPlanificacionComidas(evento.inicio, evento.dias);
-    }
+    let snapshot = null;
+    if (evento.tipo === "viaje" && borrarComidas) snapshot = quitarPlanificacionComidas(evento.inicio, evento.dias);
+    setEventosEspeciales([...eventosEspeciales, { ...eventoLimpio, snapshot }]);
   };
   const deleteEventoEspecial = (id) => setEventosEspeciales(eventosEspeciales.filter((e) => e.id !== id));
 
@@ -896,14 +1149,19 @@ export default function App() {
             </button>
           ))}
           {tab === "calendario" && (
-            <button onClick={() => setShowImport(true)} style={{ padding: "7px 12px", borderRadius: 20, border: "1px solid #DDD6C7", fontSize: 13, fontWeight: 600, cursor: "pointer", background: "#FFFEFB", color: "#5C7A94", fontFamily: "'Inter', system-ui, sans-serif" }}>
-              ⇩ Importar
-            </button>
+            <>
+              <button onClick={() => setShowImport(true)} style={{ padding: "7px 12px", borderRadius: 20, border: "1px solid #DDD6C7", fontSize: 13, fontWeight: 600, cursor: "pointer", background: "#FFFEFB", color: "#5C7A94", fontFamily: "'Inter', system-ui, sans-serif" }}>
+                ⇩ Importar
+              </button>
+              <button onClick={() => setShowImportExcel(true)} style={{ padding: "7px 12px", borderRadius: 20, border: "1px solid #DDD6C7", fontSize: 13, fontWeight: 600, cursor: "pointer", background: "#FFFEFB", color: "#5C7A94", fontFamily: "'Inter', system-ui, sans-serif" }}>
+                📊 Excel
+              </button>
+            </>
           )}
         </div>
       </div>
 
-      {tab === "calendario" && <Calendario tasks={tasks} comidas={comidas} entreno={entreno} eventos={eventosEspeciales} onOpenTask={openTask} onJump={jump} onAddEvento={addEventoEspecial} onDeleteEvento={deleteEventoEspecial} />}
+      {tab === "calendario" && <Calendario tasks={tasks} comidas={comidas} entreno={entreno} eventos={eventosEspeciales} onOpenTask={openTask} onJump={jump} onAddEvento={addEventoEspecial} onDeleteEvento={deleteEventoEspecial} onRestaurarSnapshot={restaurarSnapshotComidas} />}
       {tab === "comidas" && <Comidas date={focusDate} setDate={setFocusDate} comidas={comidas} setComidas={setComidas} recetas={recetas} setRecetas={setRecetas} />}
       {tab === "entreno" && <Entreno date={focusDate} setDate={setFocusDate} entreno={entreno} setEntreno={setEntreno} detalle={detalle} setDetalle={setDetalle} />}
       {tab === "compra" && <Compra compra={compra} setCompra={setCompra} />}
@@ -914,6 +1172,7 @@ export default function App() {
 
       {modalTask && <TaskModal task={modalTask} onSave={saveTask} onDelete={isNew ? null : deleteTask} onClose={() => setModalTask(null)} />}
       {showImport && <ImportModal onImport={importarEventos} onClose={() => setShowImport(false)} />}
+      {showImportExcel && <ImportExcelModal onImport={importarExcel} onClose={() => setShowImportExcel(false)} />}
     </div>
   );
 }
