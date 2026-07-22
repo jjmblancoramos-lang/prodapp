@@ -351,12 +351,20 @@ function useStore(key, seed) {
   useEffect(() => {
     let activo = true;
     (async () => {
-      const { data: row } = await supabase.from("app_data").select("value").eq("key", key).maybeSingle();
+      const { data: row, error } = await supabase.from("app_data").select("value").eq("key", key).maybeSingle();
       if (!activo) return;
-      if (row) setData(row.value);
-      else {
+      if (error) {
+        console.error(`Error cargando "${key}" desde Supabase:`, error);
         setData(seed);
-        await supabase.from("app_data").upsert({ key, value: seed });
+        setLoaded(true);
+        return;
+      }
+      if (row) {
+        setData(row.value);
+      } else {
+        setData(seed);
+        const { error: errorSeed } = await supabase.from("app_data").upsert({ key, value: seed });
+        if (errorSeed) console.error(`Error inicializando "${key}" en Supabase:`, errorSeed);
       }
       setLoaded(true);
     })();
@@ -374,7 +382,9 @@ function useStore(key, seed) {
 
   const persist = useCallback((next) => {
     setData(next);
-    supabase.from("app_data").upsert({ key, value: next, updated_at: new Date().toISOString() });
+    supabase.from("app_data").upsert({ key, value: next, updated_at: new Date().toISOString() }).then(({ error }) => {
+      if (error) console.error(`Error guardando "${key}" en Supabase:`, error);
+    });
   }, [key]);
 
   return [loaded ? (data ?? seed) : seed, persist];
