@@ -33,7 +33,12 @@ const TIPOS_EVENTO_ESPECIAL = {
 };
 
 const uid = () => Math.random().toString(36).slice(2, 10);
-const todayISO = () => new Date().toISOString().slice(0, 10);
+
+function todayISO() {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+
 const emptyTask = () => ({ id: uid(), titulo: "", categoria: "Hijos", prioridad: "Medio", estado: "backlog", inicio: todayISO(), fin: "", motivoBloqueo: "", comentarios: "" });
 const emptyReceta = () => ({ titulo: "", nota: "", ingredientes: [], pasos: [] });
 
@@ -41,7 +46,13 @@ const emptyReceta = () => ({ titulo: "", nota: "", ingredientes: [], pasos: [] }
 
 function fmtCorto(d) { if (!d) return ""; const [y, m, day] = d.split("-"); return `${day}/${m}`; }
 function fmtLargo(iso) { if (!iso) return ""; const d = new Date(iso + "T00:00:00"); return d.toLocaleDateString("es-ES", { weekday: "long", day: "numeric", month: "long", year: "numeric" }); }
-function addDays(iso, delta) { const d = new Date(iso + "T00:00:00"); d.setDate(d.getDate() + delta); return d.toISOString().slice(0, 10); }
+
+function addDays(iso, delta) {
+  const d = new Date(iso + "T00:00:00");
+  d.setDate(d.getDate() + delta);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+
 function inRange(iso, start, end) { if (!start) return false; const e = end || start; return iso >= start && iso <= e; }
 function monthMatrix(year, month) {
   const first = new Date(year, month, 1);
