@@ -42,7 +42,7 @@ function todayISO() {
 const emptyTask = () => ({ id: uid(), titulo: "", categoria: "Hijos", prioridad: "Medio", estado: "backlog", inicio: todayISO(), fin: "", motivoBloqueo: "", comentarios: "" });
 const emptyReceta = () => ({ titulo: "", nota: "", ingredientes: [], pasos: [] });
 
-/* ---------- utilidades ---------- */
+/* ---------- utilidades de la app ---------- */
 
 function fmtCorto(d) { if (!d) return ""; const [y, m, day] = d.split("-"); return `${day}/${m}`; }
 function fmtLargo(iso) { if (!iso) return ""; const d = new Date(iso + "T00:00:00"); return d.toLocaleDateString("es-ES", { weekday: "long", day: "numeric", month: "long", year: "numeric" }); }
