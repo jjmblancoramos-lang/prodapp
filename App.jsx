@@ -29,6 +29,7 @@ const TIPOS_EVENTO_ESPECIAL = {
   viaje: { color: "#9B968A", label: "Viaje" },
   homeexchange: { color: "#8B6FA8", label: "HomeExchange" },
   vacaciones_ninos: { color: "#7FA66B", label: "Vacaciones de los niños" },
+  compromiso: { color: "#B5484A", label: "Cita/Reunión/Evento" },
 };
 
 const uid = () => Math.random().toString(36).slice(2, 10);
@@ -59,7 +60,7 @@ function shareWhatsApp(text) {
   window.open(`https://wa.me/?text=${encodeURIComponent(text)}`, "_blank");
 }
 
-/* ---------- eventos especiales (viaje / HomeExchange / vacaciones niños) ---------- */
+/* ---------- eventos especiales (viaje / HomeExchange / vacaciones niños / compromiso) ---------- */
 
 function eventoCubreDia(evento, iso) {
   const fin = addDays(evento.inicio, evento.dias - 1);
@@ -70,11 +71,11 @@ function eventosParaDia(eventos, iso) {
 }
 function fondoEventosDia(eventos, iso) {
   const activos = eventosParaDia(eventos, iso);
-  const colores = activos.map((e) => TIPOS_EVENTO_ESPECIAL[e.tipo].color);
-  if (colores.length === 0) return null;
-  if (colores.length === 1) return colores[0];
-  const step = 100 / colores.length;
-  const stops = colores.map((c, i) => `${c} ${i * step}%, ${c} ${(i + 1) * step}%`).join(", ");
+  const coloresUnicos = [...new Set(activos.map((e) => TIPOS_EVENTO_ESPECIAL[e.tipo].color))];
+  if (coloresUnicos.length === 0) return null;
+  if (coloresUnicos.length === 1) return coloresUnicos[0];
+  const step = 100 / coloresUnicos.length;
+  const stops = coloresUnicos.map((c, i) => `${c} ${i * step}%, ${c} ${(i + 1) * step}%`).join(", ");
   return `linear-gradient(135deg, ${stops})`;
 }
 
@@ -542,7 +543,7 @@ function ImportExcelModal({ onImport, onClose }) {
   );
 }
 
-/* ---------- evento especial (viaje / HomeExchange / vacaciones niños) ---------- */
+/* ---------- evento especial (viaje / HomeExchange / vacaciones niños / compromiso) ---------- */
 
 function EventoEspecialModal({ fecha, onSave, onClose }) {
   const [paso, setPaso] = useState("eleccion");
@@ -551,6 +552,9 @@ function EventoEspecialModal({ fecha, onSave, onClose }) {
   const [dias, setDias] = useState(1);
   const [destino, setDestino] = useState("");
   const [eventoViajePendiente, setEventoViajePendiente] = useState(null);
+  const [categoriaCompromiso, setCategoriaCompromiso] = useState("Cita");
+  const [descripcionCompromiso, setDescripcionCompromiso] = useState("");
+  const [personasCompromiso, setPersonasCompromiso] = useState(1);
 
   const elegir = (opcion) => {
     if (opcion === "cancelar") { onClose(); return; }
@@ -565,6 +569,7 @@ function EventoEspecialModal({ fecha, onSave, onClose }) {
 
   const aceptarHomeExchange = () => onSave({ id: uid(), tipo: "homeexchange", inicio: fecha, dias: Number(dias) || 1 });
   const aceptarVacaciones = () => onSave({ id: uid(), tipo: "vacaciones_ninos", inicio: fecha, dias: Number(dias) || 1 });
+  const aceptarCompromiso = () => onSave({ id: uid(), tipo: "compromiso", inicio: fecha, dias: 1, categoriaCompromiso, descripcion: descripcionCompromiso, personas: Number(personasCompromiso) || 1 });
 
   return (
     <div style={{ position: "fixed", inset: 0, background: "rgba(43,42,38,0.45)", display: "flex", alignItems: "flex-end", justifyContent: "center", zIndex: 60 }} onClick={onClose}>
@@ -580,6 +585,7 @@ function EventoEspecialModal({ fecha, onSave, onClose }) {
               <button style={btnPrimary} onClick={() => elegir("viaje")}>Sí, nos vamos</button>
               <button style={btnPrimary} onClick={() => elegir("homeexchange")}>Sí, vienen a casa con HomeExchange</button>
               <button style={btnPrimary} onClick={() => elegir("vacaciones")}>Sí, son vacaciones para los niños</button>
+              <button style={btnPrimary} onClick={() => elegir("compromiso")}>No, pero tengo una cita, un evento o una reunión</button>
               <button style={btnGhost} onClick={() => elegir("cancelar")}>No, nada de lo anterior, cancelar</button>
             </div>
           </>
@@ -642,6 +648,26 @@ function EventoEspecialModal({ fecha, onSave, onClose }) {
             <div style={{ display: "flex", gap: 10, marginTop: 18 }}>
               <button onClick={onClose} style={btnGhost}>Cancelar</button>
               <button onClick={aceptarVacaciones} style={btnPrimary}>Aceptar</button>
+            </div>
+          </>
+        )}
+
+        {paso === "compromiso" && (
+          <>
+            <div style={{ fontFamily: "'Fraunces', Georgia, serif", fontSize: 16, fontWeight: 600, marginBottom: 4, color: "#2B2A26" }}>Cita, evento o reunión</div>
+            <label style={lbl}>¿Qué tienes?</label>
+            <select style={inp} value={categoriaCompromiso} onChange={(e) => setCategoriaCompromiso(e.target.value)}>
+              <option value="Cita">Cita</option>
+              <option value="Reunión">Reunión</option>
+              <option value="Evento">Evento</option>
+            </select>
+            <label style={lbl}>Descripción</label>
+            <input type="text" style={inp} value={descripcionCompromiso} onChange={(e) => setDescripcionCompromiso(e.target.value)} placeholder="¿De qué se trata?" />
+            <label style={lbl}>¿Cuántos lo tenéis?</label>
+            <input type="number" min="1" style={inp} value={personasCompromiso} onChange={(e) => setPersonasCompromiso(e.target.value)} />
+            <div style={{ display: "flex", gap: 10, marginTop: 18 }}>
+              <button onClick={onClose} style={btnGhost}>Cancelar</button>
+              <button onClick={aceptarCompromiso} style={btnPrimary}>Aceptar</button>
             </div>
           </>
         )}
@@ -911,7 +937,7 @@ function Calendario({ tasks, comidas, entreno, eventos, onOpenTask, onJump, onAd
   const handleDeleteEvento = (ev) => {
     const confirmMsg = ev.tipo === "viaje"
       ? `¿Eliminar el viaje a "${ev.destino || "sin destino"}" (${ev.dias} día${ev.dias === 1 ? "" : "s"})?`
-      : `¿Eliminar "${TIPOS_EVENTO_ESPECIAL[ev.tipo].label}" (${ev.dias} día${ev.dias === 1 ? "" : "s"})?`;
+      : `¿Eliminar "${ev.tipo === "compromiso" ? ev.categoriaCompromiso : TIPOS_EVENTO_ESPECIAL[ev.tipo].label}" (${ev.dias} día${ev.dias === 1 ? "" : "s"})?`;
     if (!window.confirm(confirmMsg)) return;
     if (ev.snapshot) {
       if (window.confirm("Este viaje había eliminado planificación de comidas y ajustado la compra. ¿Quieres restaurarlas?")) {
@@ -976,12 +1002,16 @@ function Calendario({ tasks, comidas, entreno, eventos, onOpenTask, onJump, onAd
               style={{ position: "absolute", top: 8, right: 8, width: 24, height: 24, borderRadius: 6, border: "1px solid #E4DFD3", background: "#FBEAE6", color: "#A8503D", fontSize: 13, lineHeight: "22px", cursor: "pointer", padding: 0 }}
             >×</button>
             <div style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: "0.04em", color: "#8A8577", marginBottom: 4 }}>
-              {TIPOS_EVENTO_ESPECIAL[ev.tipo].label}
+              {ev.tipo === "compromiso" ? ev.categoriaCompromiso : TIPOS_EVENTO_ESPECIAL[ev.tipo].label}
             </div>
             {ev.tipo === "viaje" ? (
               <div style={{ fontSize: 13.5, color: "#2B2A26" }}>
                 {ev.personas} persona{ev.personas === 1 ? "" : "s"} · {ev.motivo} · {ev.dias} día{ev.dias === 1 ? "" : "s"}{ev.destino ? ` · Destino: ${ev.destino}` : ""}
                 {ev.snapshot && <span style={{ display: "block", marginTop: 4, fontSize: 11.5, color: "#8A8577" }}>Comidas y compra ajustadas para este viaje</span>}
+              </div>
+            ) : ev.tipo === "compromiso" ? (
+              <div style={{ fontSize: 13.5, color: "#2B2A26" }}>
+                <strong>{ev.categoriaCompromiso}</strong>{ev.descripcion ? ` — ${ev.descripcion}` : ""} · {ev.personas} persona{ev.personas === 1 ? "" : "s"}
               </div>
             ) : (
               <div style={{ fontSize: 13.5, color: "#2B2A26" }}>{ev.dias} día{ev.dias === 1 ? "" : "s"}</div>
