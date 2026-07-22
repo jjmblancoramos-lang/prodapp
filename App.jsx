@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import * as XLSX from "xlsx";
+import { supabase } from "./supabaseClient";
 import comidasData from "./comidas-data.json";
 import entrenoData from "./entreno-data.json";
 import recetasData from "./recetas-data.json";
@@ -329,22 +330,42 @@ function fusionarCompraSoloFaltante(actual, nuevo) {
   return r;
 }
 
-/* ---------- almacenamiento genérico ---------- */
+/* ---------- almacenamiento genérico (Supabase, sincronizado en tiempo real) ---------- */
 
 function useStore(key, seed) {
   const [data, setData] = useState(null);
+  const [loaded, setLoaded] = useState(false);
+
   useEffect(() => {
-    try {
-      const raw = window.localStorage.getItem(key);
-      setData(raw ? JSON.parse(raw) : seed);
-    } catch (e) { setData(seed); }
+    let activo = true;
+    (async () => {
+      const { data: row } = await supabase.from("app_data").select("value").eq("key", key).maybeSingle();
+      if (!activo) return;
+      if (row) setData(row.value);
+      else {
+        setData(seed);
+        await supabase.from("app_data").upsert({ key, value: seed });
+      }
+      setLoaded(true);
+    })();
+
+    const canal = supabase
+      .channel(`app_data_${key}`)
+      .on("postgres_changes", { event: "*", schema: "public", table: "app_data", filter: `key=eq.${key}` }, (payload) => {
+        if (payload.new && payload.new.value) setData(payload.new.value);
+      })
+      .subscribe();
+
+    return () => { activo = false; supabase.removeChannel(canal); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [key]);
+
   const persist = useCallback((next) => {
     setData(next);
-    try { window.localStorage.setItem(key, JSON.stringify(next)); } catch (e) {}
+    supabase.from("app_data").upsert({ key, value: next, updated_at: new Date().toISOString() });
   }, [key]);
-  return [data || seed, persist];
+
+  return [loaded ? (data ?? seed) : seed, persist];
 }
 
 /* ---------- estilos compartidos ---------- */
@@ -1025,14 +1046,13 @@ export default function App() {
   };
 
   const importarExcel = (tipo, datos) => {
-    if (tipo === "comidas") setComidas((prev) => fusionarComidasVacias(prev, datos));
-    if (tipo === "recetas") setRecetas((prev) => fusionarRecetasVacias(prev, datos));
-    if (tipo === "entreno") setEntreno((prev) => fusionarEntrenoVacio(prev, datos));
-    if (tipo === "detalle") setDetalle((prev) => fusionarDetalleVacio(prev, datos));
-    if (tipo === "compra") setCompra((prev) => fusionarCompraSoloFaltante(prev, datos));
+    if (tipo === "comidas") setComidas(fusionarComidasVacias(comidas, datos));
+    if (tipo === "recetas") setRecetas(fusionarRecetasVacias(recetas, datos));
+    if (tipo === "entreno") setEntreno(fusionarEntrenoVacio(entreno, datos));
+    if (tipo === "detalle") setDetalle(fusionarDetalleVacio(detalle, datos));
+    if (tipo === "compra") setCompra(fusionarCompraSoloFaltante(compra, datos));
   };
 
-  // quita comidas/recetas de esos días y ajusta la compra; devuelve un snapshot para poder deshacerlo
   const quitarPlanificacionComidas = (fechaInicio, dias) => {
     const fechas = [];
     for (let i = 0; i < dias; i++) fechas.push(addDays(fechaInicio, i));
